@@ -1,0 +1,15 @@
+# Cleanliness rules. Merge into your own ruff config if you already have one.
+line-length = 100
+
+[lint]
+select = [
+  "E", "F",   # pycodestyle errors, pyflakes (unused imports/variables)
+  "I",        # import sorting
+  "UP",       # modern syntax
+  "B",        # likely bugs
+  "SIM",      # needless complexity
+  "C4",       # comprehensions
+  "PIE",      # misc cleanups
+  "RET",      # return statements
+  "ERA",      # commented-out code
+]

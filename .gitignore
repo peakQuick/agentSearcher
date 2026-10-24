@@ -1,0 +1,20 @@
+# python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# tools
+.pytest_cache/
+.ruff_cache/
+
+# local settings
+.env
+
+# models and browsers normally live in ~/.cache (huggingface, ms-playwright);
+# these only matter if HF_HOME or PLAYWRIGHT_BROWSERS_PATH point inside the project
+models/
+*.onnx
+ms-playwright/
