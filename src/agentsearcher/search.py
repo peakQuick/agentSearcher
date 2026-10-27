@@ -12,6 +12,7 @@ from ddgs.engines.yandex import Yandex
 from ddgs.exceptions import DDGSException
 
 from agentsearcher import config
+from agentsearcher.fetch import url_error
 
 log = logging.getLogger(__name__)
 
@@ -107,8 +108,11 @@ def fuse(rankings: list[list[dict]]) -> list[dict]:
     for rank in rankings:
         seen = set()
         for pos, row in enumerate(rank):
-            key = url_key(row.get("href") or row.get("url") or row.get("image") or "")
-            if not key or key in seen:
+            url = row.get("href") or row.get("url") or row.get("image") or ""
+            if url_error(url):
+                continue
+            key = url_key(url)
+            if key in seen:
                 continue
             seen.add(key)
             rows.setdefault(key, row)
@@ -225,6 +229,7 @@ async def _web_search(
     return [
         Hit(r["url"], r.get("title", ""), r.get("content", ""), r.get("publishedDate"))
         for r in rows[:max_results]
+        if not url_error(r["url"])
     ]
 
 

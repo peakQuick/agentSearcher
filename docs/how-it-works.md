@@ -67,7 +67,14 @@ Search engine results are cached for the same time per query and parameters, whi
 
 ## Concurrency
 
-Requests run in parallel in one asyncio process; the shared resources have limits, and anything above a limit waits its turn: `MAX_FETCHES` downloads, 2 downloads per host, `MAX_RENDERS` browser renders. The reranker model is loaded once and shared; parallel requests score with it at the same time, each with `RERANK_THREADS` threads. On a machine with more cores and RAM, raise `MAX_FETCHES`, `MAX_RENDERS` and `RERANK_THREADS`.
+Requests run in one asyncio process, and every limit below is a FIFO queue: whatever is above it waits its turn.
+
+- **Requests.** At most `MAX_REQUESTS` (CPU cores) requests run at once, of which at most `MAX_CRAWLS` (cores / 4) are crawl or map. A request's own time budget (search modes, page timeouts) starts when it leaves the queue, so a queued request doesn't time out while waiting. If no slot frees up within `QUEUE_TIMEOUT` (120 s), it fails with `server busy: N requests queued, retry later` (HTTP 503, an error text in MCP). The dashboard shows running and queued requests and how long each one waited.
+- **CPU.** Page parsing (HTML and PDF) and reranking run in threads, at most `MAX_CPU_JOBS` (cores / 2) at a time across all requests. Without this, a few large pages (Wikipedia) parsed at once take every core and a lot of memory.
+- **Network and browser.** `MAX_FETCHES` downloads, 2 downloads per host, `MAX_RENDERS` browser renders.
+- **Reranker budget.** The model rescores at most `RERANK_BUDGET` (100) passages per request (the best by BM25); the rest follow in BM25 order. This only matters for crawl with `instructions`: 50 pages give 250 passages, which used to take ~15 s of CPU. Search has fewer than 100 candidates.
+
+The reranker model is loaded once and shared, each scoring call uses `RERANK_THREADS` threads. On a machine with more cores and RAM, raise `MAX_CPU_JOBS`, `MAX_FETCHES`, `MAX_RENDERS` and `RERANK_THREADS`; `MAX_REQUESTS` and `MAX_CRAWLS` already follow the core count.
 
 ## Response size
 

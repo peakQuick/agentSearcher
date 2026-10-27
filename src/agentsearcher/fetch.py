@@ -162,14 +162,27 @@ def _public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return ip.is_global and not ip.is_multicast
 
 
+def url_error(url: str) -> str | None:
+    """Why the url can't be fetched, or None. urlsplit raises on a bad port or a broken
+    IPv6 host; such urls come from users, page links, sitemaps and redirects alike."""
+    try:
+        parts = urlsplit(url)
+        parts.port  # noqa: B018 (parsed lazily, raises on a bad port)
+    except ValueError as e:
+        return f"invalid url: {e}"
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return f"blocked: unsupported url {url[:100]}"
+    return None
+
+
 async def check_url(url: str):
-    """Refuse non-http(s) urls and hosts that resolve to private, loopback or link-local
-    addresses, so the server can't be used to reach its own network (SSRF)."""
+    """Refuse malformed and non-http(s) urls, and hosts that resolve to private, loopback or
+    link-local addresses, so the server can't be used to reach its own network (SSRF)."""
+    if error := url_error(url):
+        raise FetchError(error)
     if config.ALLOW_PRIVATE_URLS:
         return
     parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise FetchError(f"blocked: unsupported url {url[:100]}")
     try:
         ips = [ipaddress.ip_address(parts.hostname)]
     except ValueError:
@@ -187,6 +200,8 @@ async def check_url(url: str):
 async def _download(url: str, timeout: float, max_bytes: int, types: tuple | None):
     """GET with browser TLS impersonation; body cut at max_bytes (MAX_PDF_BYTES for PDFs),
     rejected early if not `types`. Every redirect hop goes through check_url."""
+    if error := url_error(url):
+        raise FetchError(error)
     host = urlsplit(url).hostname or ""
     deadline = time.monotonic() + timeout
     async with (
@@ -212,7 +227,10 @@ async def _download(url: str, timeout: float, max_bytes: int, types: tuple | Non
                 if resp.status_code not in REDIRECTS or not location:
                     break
                 await resp.aclose()
-                url = urljoin(url, location)
+                try:
+                    url = urljoin(url, location)
+                except ValueError as e:
+                    raise FetchError(f"invalid redirect url: {e}") from e
             else:
                 raise FetchError("too many redirects")
             ctype = resp.headers.get("content-type", "text/html").lower()

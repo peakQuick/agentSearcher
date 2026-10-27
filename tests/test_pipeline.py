@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 from conftest import DYNAMIC, Handler
@@ -238,6 +239,97 @@ async def test_stats_count_requests_and_pages(site, monkeypatch):
     await pipeline.extract(ExtractRequest(urls=[f"{site}/missing"]))
     assert stats.pages["failed"] == failed_pages + 1
     assert stats.recent[0]["kind"] == "extract"
+
+
+async def test_extract_batch_with_bad_urls(site):
+    urls = ["https://[::1", f"{site}/broken-links", "http://a:99999/"]
+    response = await pipeline.extract(ExtractRequest(urls=urls, include_favicon=True))
+    assert [r["url"] for r in response["results"]] == [f"{site}/broken-links"]
+    assert "a:99999" not in response["results"][0]["favicon"]
+    assert {r["url"]: r["error"] for r in response["failed_results"]} == {
+        "https://[::1": "invalid url: Invalid IPv6 URL",
+        "http://a:99999/": "invalid url: Port out of range 0-65535",
+    }
+
+
+async def test_waiting_for_cpu_slot_does_not_eat_page_timeout(site, monkeypatch):
+    monkeypatch.setattr(pipeline, "_cpu_jobs", asyncio.Semaphore(1))
+    busy = asyncio.create_task(pipeline.cpu_bound(time.sleep, 1.5))
+    await asyncio.sleep(0.05)
+    page = await pipeline.load_or_error(
+        f"{site}/article", None, browser=False, strict=False, recall=False, timeout=1.0
+    )
+    assert "Lubricate widget bearings" in page.markdown
+    await busy
+
+
+async def test_cancelled_cpu_job_keeps_its_slot_until_done(monkeypatch):
+    monkeypatch.setattr(pipeline, "_cpu_jobs", asyncio.Semaphore(1))
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(pipeline.cpu_bound(time.sleep, 0.5), 0.1)
+    assert pipeline._cpu_jobs.locked()
+    await asyncio.sleep(0.6)
+    assert not pipeline._cpu_jobs.locked()
+
+
+@pytest.fixture
+def one_slot(monkeypatch):
+    """One request slot, one crawl slot, and a search that waits until released."""
+    monkeypatch.setattr(stats, "_requests", asyncio.Semaphore(1))
+    monkeypatch.setattr(stats, "_crawls", asyncio.Semaphore(1))
+    release = asyncio.Event()
+
+    @stats.tracked("search", lambda req: req)
+    async def slow(req):
+        await release.wait()
+        return req
+
+    return slow, release
+
+
+async def test_queue_runs_requests_in_turn(one_slot):
+    slow, release = one_slot
+    first, second = asyncio.create_task(slow("a")), asyncio.create_task(slow("b"))
+    await asyncio.sleep(0.05)
+    assert stats.queue == {"active": 1, "queued": 1}
+    release.set()
+    assert await asyncio.gather(first, second) == ["a", "b"]
+    assert stats.queue == {"active": 0, "queued": 0}
+    assert stats.recent[0]["waited"] > 0
+
+
+async def test_queue_timeout_fails_with_busy(one_slot, monkeypatch):
+    slow, release = one_slot
+    monkeypatch.setattr(config, "QUEUE_TIMEOUT", 0.1)
+    first = asyncio.create_task(slow("a"))
+    await asyncio.sleep(0.01)
+    with pytest.raises(stats.Busy, match="server busy: 1 requests queued"):
+        await slow("b")
+    assert stats.recent[0]["error"].startswith("server busy")
+    release.set()
+    await first
+    assert stats.queue == {"active": 0, "queued": 0}
+
+
+async def test_crawl_waits_for_crawl_slot_without_blocking_search(one_slot, monkeypatch):
+    _, release = one_slot
+    monkeypatch.setattr(stats, "_requests", asyncio.Semaphore(2))
+
+    @stats.tracked("crawl", lambda req: req)
+    async def slow_crawl(req):
+        await release.wait()
+        return req
+
+    @stats.tracked("search", lambda req: req)
+    async def fast_search(req):
+        return req
+
+    crawls = [asyncio.create_task(slow_crawl(u)) for u in ("a", "b")]
+    await asyncio.sleep(0.05)
+    assert stats.queue == {"active": 1, "queued": 1}
+    assert await asyncio.wait_for(fast_search("q"), 1) == "q"
+    release.set()
+    assert await asyncio.gather(*crawls) == ["a", "b"]
 
 
 @pytest.fixture

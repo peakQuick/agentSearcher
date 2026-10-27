@@ -7,6 +7,7 @@ import sys
 import time
 import uuid
 from collections import Counter, OrderedDict
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, timedelta
 from urllib.parse import urlsplit
@@ -25,6 +26,7 @@ from agentsearcher.fetch import (
     js_domains,
     needs_browser,
     renderer,
+    url_error,
 )
 from agentsearcher.rank import bm25, dedup, rank_chunks, reranker
 from agentsearcher.schemas import ExtractRequest, SearchRequest
@@ -59,6 +61,8 @@ DEPTHS = {
 }
 
 _janitor: asyncio.Task | None = None
+_cpu_jobs = asyncio.Semaphore(config.MAX_CPU_JOBS)
+_page_budget: ContextVar[asyncio.Timeout | None] = ContextVar("page_budget", default=None)
 _libc = ctypes.CDLL(ctypes.util.find_library("c")) if sys.platform == "linux" else None
 
 
@@ -90,6 +94,34 @@ async def shutdown():
     await renderer.close()
 
 
+async def cpu_bound(func, *args, **kwargs):
+    """Run parsing or ranking in a thread, at most MAX_CPU_JOBS at a time across all requests:
+    a few big pages (Wikipedia) would otherwise take every core and a lot of memory at once.
+
+    Waiting for a slot doesn't count against the page's load timeout. A thread can't be
+    stopped, so a cancelled caller leaves it running and its slot taken until it ends.
+    """
+    budget = _page_budget.get()
+    deadline = budget.when() if budget and not budget.expired() else None
+    if budget and deadline is not None:
+        budget.reschedule(None)
+    began = time.monotonic()
+    try:
+        await _cpu_jobs.acquire()
+    finally:
+        if budget and deadline is not None:
+            budget.reschedule(deadline + time.monotonic() - began)
+    job = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
+    job.add_done_callback(_release_cpu)
+    return await asyncio.shield(job)
+
+
+def _release_cpu(job: asyncio.Future):
+    _cpu_jobs.release()
+    if not job.cancelled():
+        job.exception()  # retrieved, so an abandoned job's error isn't logged as unhandled
+
+
 def _usable(fetched, page: Page) -> Page:
     if fetched.challenge or is_block_page(page.title, page.markdown):
         raise FetchError("blocked by anti-bot challenge")
@@ -105,7 +137,7 @@ def _usable(fetched, page: Page) -> Page:
 async def _render(url: str, timeout: float, recall: bool) -> Page:
     fetched = await renderer.render(url, timeout)
     stats.pages["rendered"] += 1
-    page = await asyncio.to_thread(extract_page, fetched.html, fetched.url, recall=recall)
+    page = await cpu_bound(extract_page, fetched.html, fetched.url, recall=recall)
     page.rendered = True
     return _usable(fetched, page)
 
@@ -125,12 +157,12 @@ async def load_page(
     if fetched.status in GONE or (fetched.status >= 400 and not browser):
         raise FetchError(f"HTTP {fetched.status}")
     if fetched.pdf is not None:
-        page = await asyncio.to_thread(extract_pdf, fetched.pdf, fetched.url)
+        page = await cpu_bound(extract_pdf, fetched.pdf, fetched.url)
         if not page.markdown:
             raise FetchError("PDF has no text layer")
         log.info("pdf     %s (%d chars)", url, len(page.markdown))
         return page
-    page = await asyncio.to_thread(extract_page, fetched.html, fetched.url, recall=recall)
+    page = await cpu_bound(extract_page, fetched.html, fetched.url, recall=recall)
     if fetched.status >= 400 and not fetched.challenge:
         reason = f"HTTP {fetched.status}"
     else:
@@ -219,23 +251,29 @@ async def load_or_error(
     `markdown_first` tries the site's clean .md version (llms.txt convention) first.
     Successful loads are reused from page_cache.
     """
+    if error := url_error(url):
+        log.info("failed  %s (%s)", url, error)
+        stats.pages["failed"] += 1
+        return error
     if page := page_cache.get(url, recall, browser):
         log.info("cached  %s", url)
         stats.pages["cached"] += 1
         return page
     try:
-        page = await asyncio.wait_for(
-            _markdown_or_page(
-                url,
-                snippet,
-                markdown_first,
-                browser=browser,
-                strict=strict,
-                recall=recall,
-                timeout=timeout,
-            ),
-            timeout,
-        )
+        async with asyncio.timeout(timeout) as budget:
+            token = _page_budget.set(budget)
+            try:
+                page = await _markdown_or_page(
+                    url,
+                    snippet,
+                    markdown_first,
+                    browser=browser,
+                    strict=strict,
+                    recall=recall,
+                    timeout=timeout,
+                )
+            finally:
+                _page_budget.reset(token)
     except TimeoutError:
         error = "timed out"
     except FetchError as e:
@@ -456,7 +494,7 @@ async def search(req: SearchRequest) -> dict:
     per_source = req.chunks_per_source + (depth.extra_candidates if depth.model else 0)
     if req.dedup:
         chunks = dedup(chunks)
-    ranked = await asyncio.to_thread(rank_chunks, req.query, chunks, per_source, depth.model)
+    ranked = await cpu_bound(rank_chunks, req.query, chunks, per_source, depth.model)
     by_source: dict[int, list[tuple[Chunk, float]]] = {}
     for c, s in ranked:
         by_source.setdefault(c.source, []).append((c, s))
@@ -551,9 +589,7 @@ async def extract(req: ExtractRequest) -> dict:
             if isinstance(page, Page)
             for c in chunk_markdown(page.markdown, i, config.CHUNK_CHARS)
         ]
-        ranked = await asyncio.to_thread(
-            rank_chunks, req.query, chunks, req.chunks_per_source + 2, True
-        )
+        ranked = await cpu_bound(rank_chunks, req.query, chunks, req.chunks_per_source + 2, True)
         for c, _ in ranked:
             by_source.setdefault(c.source, []).append(c)
 

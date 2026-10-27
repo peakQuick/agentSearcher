@@ -1,11 +1,15 @@
 """In-process counters and system load for the dashboard (GET /stats). Reset on restart."""
 
+import asyncio
 import functools
 import os
 import time
 from collections import Counter, deque
+from contextlib import asynccontextmanager
 
 import psutil
+
+from agentsearcher import config
 
 started = time.time()
 requests: dict[str, dict[str, float]] = {
@@ -16,16 +20,57 @@ recent: deque[dict] = deque(maxlen=30)
 _procs: dict[int, psutil.Process] = {}
 
 
+class Busy(Exception):
+    """No request slot freed up within QUEUE_TIMEOUT."""
+
+
+_requests = asyncio.Semaphore(config.MAX_REQUESTS)
+_crawls = asyncio.Semaphore(config.MAX_CRAWLS)
+queue = {"active": 0, "queued": 0}
+
+
+@asynccontextmanager
+async def _slot(kind: str):
+    """Wait (FIFO) for a request slot; crawl and map also need one of the fewer crawl slots,
+    taken first so a waiting crawl doesn't hold a slot that a search could use."""
+    needed = [_crawls, _requests] if kind in ("crawl", "map") else [_requests]
+    taken: list[asyncio.Semaphore] = []
+    queue["queued"] += 1
+    try:
+        async with asyncio.timeout(config.QUEUE_TIMEOUT):
+            for sem in needed:
+                await sem.acquire()
+                taken.append(sem)
+    except BaseException as e:
+        for sem in taken:
+            sem.release()
+        if isinstance(e, TimeoutError):
+            raise Busy(f"server busy: {queue['queued']} requests queued, retry later") from None
+        raise
+    finally:
+        queue["queued"] -= 1
+    queue["active"] += 1
+    try:
+        yield
+    finally:
+        queue["active"] -= 1
+        for sem in taken:
+            sem.release()
+
+
 def tracked(kind: str, target):
-    """Count calls of an async pipeline entry point; `target(req)` names it in `recent`."""
+    """Queue and count calls of an async pipeline entry point; `target(req)` names it in
+    `recent`. The request's own time budget starts once it leaves the queue."""
 
     def wrap(func):
         @functools.wraps(func)
         async def call(req):
-            begin = time.monotonic()
+            queued_at = begin = time.monotonic()
             error = None
             try:
-                return await func(req)
+                async with _slot(kind):
+                    begin = time.monotonic()
+                    return await func(req)
             except Exception as e:
                 error = str(e) or type(e).__name__
                 raise
@@ -39,6 +84,7 @@ def tracked(kind: str, target):
                         "kind": kind,
                         "target": target(req)[:200],
                         "seconds": round(seconds, 2),
+                        "waited": round(begin - queued_at, 2),
                         "error": error,
                     }
                 )

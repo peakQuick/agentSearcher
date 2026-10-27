@@ -1,4 +1,5 @@
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -7,7 +8,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from agentsearcher import api, config, pipeline
+from agentsearcher import api, config, pipeline, stats
 
 
 @pytest.fixture
@@ -41,6 +42,49 @@ def test_crawl_invalid_regex_is_400(client):
     assert "invalid regex" in resp.json()["detail"]["error"]
 
 
+def test_map_invalid_url_is_400(client):
+    resp = client.post("/map", json={"url": "https://[::1"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"] == "url: invalid url: Invalid IPv6 URL"
+
+
+def test_busy_is_503(client, monkeypatch):
+    async def busy(req):
+        raise stats.Busy("server busy: 3 requests queued, retry later")
+
+    monkeypatch.setattr(pipeline, "search", busy)
+    resp = client.post("/search", json={"query": "x"})
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"].startswith("server busy")
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "error"),
+    [
+        ("web_search", {"query": ""}, "query: String should have at least 1 character"),
+        ("web_map", {"url": "a.com", "limit": 0}, "limit: Input should be greater than or equal"),
+        ("web_crawl", {"url": "http://a:99999/"}, "url: invalid url: Port out of range"),
+    ],
+)
+async def test_mcp_invalid_arguments_name_the_field(tool, args, error):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from agentsearcher.mcp_server import server
+
+    with pytest.raises(ToolError, match=error):
+        await server.call_tool(tool, args)
+
+
+async def test_mcp_extract_reports_bad_urls_and_keeps_good_ones(site):
+    from agentsearcher.mcp_server import server
+
+    urls = ["https://user\\@bad:pass@evil.com/x", "https://[::1", f"{site}/article"]
+    text = (await server.call_tool("web_extract", {"urls": urls})).content[0].text
+    assert f"## {site}/article" in text
+    assert "Failed: https://[::1: invalid url: Invalid IPv6 URL" in text
+    assert "Failed: https://user\\@bad:pass@evil.com/x" in text
+
+
 def test_auth(client, monkeypatch):
     monkeypatch.setattr(config, "API_KEYS", {"secret"})
     assert client.post("/search", json={"query": "x"}).status_code == 401
@@ -61,19 +105,30 @@ def test_dashboard_and_stats(client, monkeypatch):
         "uptime",
         "requests",
         "pages",
+        "queue",
         "cache",
         "components",
         "system",
         "recent",
+        "settings",
     }
     assert set(stats["requests"]) == {"search", "extract", "crawl", "map"}
     assert stats["system"]["memory_mb"] > 0
     assert stats["system"]["processes"] >= 1
 
-    monkeypatch.setattr(config, "API_KEYS", {"secret"})
+    assert stats["settings"]["MAX_REQUESTS"] == config.MAX_REQUESTS
+    assert stats["settings"]["API_KEYS"] is None
+
+    monkeypatch.setattr(config, "API_KEYS", {"tvly-zq81"})
+    monkeypatch.setattr(config, "LLM_API_KEY", "sk-llm")
+    monkeypatch.setattr(config, "PROXY_URL", "socks5://bob:hunter2@proxy:1080")
     assert client.get("/stats").status_code == 401
     assert client.get("/").status_code == 200
-    assert client.get("/stats", headers={"Authorization": "Bearer secret"}).status_code == 200
+    resp = client.get("/stats", headers={"Authorization": "Bearer tvly-zq81"})
+    assert resp.status_code == 200
+    assert not {"tvly-zq81", "sk-llm", "hunter2"} & set(re.findall(r"[\w-]+", resp.text))
+    assert resp.json()["settings"]["API_KEYS"] == "1 set"
+    assert resp.json()["settings"]["PROXY_URL"] == "socks5://bob:***@proxy:1080"
 
 
 @pytest.fixture(scope="module")

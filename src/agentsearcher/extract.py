@@ -6,6 +6,8 @@ from urllib.parse import urldefrag, urljoin, urlsplit
 import lxml.html
 import trafilatura
 
+from agentsearcher.fetch import url_error
+
 MD_SYNTAX = re.compile(r"^#{1,6}\s+|^\s*[-*+]\s+|^\s*>\s?|\*\*|__|`|^\|[\s|:-]*\|$", re.MULTILINE)
 SKIP_IMAGE = re.compile(r"\.(svg|ico|gif)(\?|$)|^data:|logo|icon|sprite|pixel", re.IGNORECASE)
 SKIP_LINK = re.compile(
@@ -38,17 +40,28 @@ def default_favicon(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}/favicon.ico"
 
 
+def _absolute(base: str, href: str) -> str | None:
+    """href resolved against base; None if that isn't a valid http(s) url (pages can
+    carry broken links that would make urlsplit raise further down)."""
+    try:
+        url = urljoin(base, href.strip())
+    except ValueError:
+        return None
+    return None if url_error(url) else url
+
+
 def _favicon(tree, url: str) -> str:
     for href in tree.xpath("//link[contains(@rel, 'icon')]/@href"):
-        return urljoin(url, href)
+        if absolute := _absolute(url, href):
+            return absolute
     return default_favicon(url)
 
 
 def _images(tree, url: str, limit: int = 10) -> list[str]:
     seen: list[str] = []
     for src in tree.xpath("//img/@src"):
-        src = urljoin(url, src.strip())
-        if src.startswith("http") and not SKIP_IMAGE.search(src) and src not in seen:
+        src = _absolute(url, src)
+        if src and not SKIP_IMAGE.search(src) and src not in seen:
             seen.append(src)
         if len(seen) == limit:
             break
@@ -60,9 +73,9 @@ def _crawlable(href: str, base: str) -> str | None:
     href = href.strip()
     if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
         return None
-    absolute = urldefrag(urljoin(base, href)).url
-    if absolute.startswith(("http://", "https://")) and not SKIP_LINK.search(absolute):
-        return absolute
+    absolute = _absolute(base, href)
+    if absolute and not SKIP_LINK.search(absolute):
+        return urldefrag(absolute).url
     return None
 
 

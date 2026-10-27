@@ -135,6 +135,18 @@ claude mcp add agentsearcher -- agentsearcher mcp
 
 Other clients: [docs/mcp.md](docs/mcp.md).
 
+## Configuration
+
+The defaults work as is. Settings are environment variables with the `AGENTSEARCHER_` prefix:
+
+```bash
+AGENTSEARCHER_API_KEYS=change-me agentsearcher serve     # pipx / source
+```
+
+With Docker, put them under `environment:` in [compose.yaml](compose.yaml); for MCP over stdio, in the client's `env` block. `GET /stats` shows the values in effect (secrets hidden).
+
+The ones people usually change: `API_KEYS` (before opening the server to a network), `PROXY_URL` (search engines block your IP), `LLM_BASE_URL` (answers with `include_answer`), `MAX_REQUESTS` / `MAX_RENDERS` (a machine with little RAM). All variables and ready-made recipes: [docs/configuration.md](docs/configuration.md).
+
 ## Search depth
 
 | mode | what it does | warm latency\* |

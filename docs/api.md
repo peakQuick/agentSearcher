@@ -26,9 +26,10 @@ If `AGENTSEARCHER_API_KEYS` is not set, any request with any key is accepted. If
 
 Errors come as `{"detail": {"error": "..."}}`:
 - 400: invalid parameters (type, range, incompatible fields, bad regex);
-- 401: wrong key.
+- 401: wrong key;
+- 503: `server busy: N requests queued, retry later`, the request waited longer than `QUEUE_TIMEOUT` for a free slot (see [how-it-works](how-it-works.md#concurrency)).
 
-A URL that fails to load (404, anti-bot, timeout, blocked address) is not a request error. In extract it goes to `failed_results`; in search, the search engine snippet is used instead of the page.
+A URL that fails to load (invalid URL, 404, anti-bot, timeout, blocked address) is not a request error. In extract, crawl and map it goes to `failed_results`; in search, the search engine snippet is used instead of the page.
 
 ## `POST /search`
 
@@ -115,7 +116,7 @@ If the site has `llms.txt` (or the requested URL ends in `.md`), the `.md` versi
 | `timeout` | 10–150 s | 150 | when it runs out, whatever was collected is returned |
 | `include_usage` | bool | false | |
 
-Response: `{"base_url", "results": ["url", ...], "response_time", "request_id"}`. URLs at the last level are returned without being fetched. How sitemap, robots.txt and llms.txt are used is described in [how-it-works](how-it-works.md#crawling-map-and-crawl).
+Response: `{"base_url", "results": ["url", ...], "failed_results": [{"url", "error"}], "response_time", "request_id"}`. URLs at the last level are returned without being fetched; `failed_results` lists the pages that were fetched for their links and failed, e.g. an unreachable root. How sitemap, robots.txt and llms.txt are used is described in [how-it-works](how-it-works.md#crawling-map-and-crawl).
 
 ## `POST /crawl`
 
@@ -129,7 +130,7 @@ The `/map` parameters, plus:
 | `include_images`, `include_favicon` | bool | false | |
 | `dedup` | bool | true | extension: with `instructions`, drop repeated chunks (headers, banners) and reprints |
 
-Response: `{"base_url", "results": [{"url", "raw_content"}], "response_time", "request_id"}`. Without `instructions`, `raw_content` is the whole page (up to `MAX_RAW_CHARS`); with `instructions`, only the relevant chunks joined with ` [...] `. When the response exceeds `MAX_RESPONSE_CHARS`, the last pages are cut to 300 characters each.
+Response: `{"base_url", "results": [{"url", "raw_content"}], "failed_results": [{"url", "error"}], "response_time", "request_id"}`. Without `instructions`, `raw_content` is the whole page (up to `MAX_RAW_CHARS`); with `instructions`, only the relevant chunks joined with ` [...] `. When the response exceeds `MAX_RESPONSE_CHARS`, the last pages are cut to 300 characters each.
 
 ## `GET /usage`, `GET /health`
 
@@ -140,8 +141,10 @@ Response: `{"base_url", "results": [{"url", "raw_content"}], "response_time", "r
 `/stats` is what the dashboard shows, as JSON (requires the key if `API_KEYS` is set):
 - `requests`: `ok`, `failed` and total `seconds` per kind (`search`, `extract`, `crawl`, `map`), counted for the API, MCP and CLI alike;
 - `pages`: `loaded`, `failed`, `cached` (served from the page cache), `rendered` (went through the browser);
-- `cache`, `components` (`browser` running, `model` loaded), `recent` (last 30 requests);
-- `system`: CPU and memory of the server with its child processes (Chromium, the node driver; PSS on Linux, RSS elsewhere), and of the whole machine.
+- `queue`: `active` and `queued` requests right now, and `max_requests`;
+- `cache`, `components` (`browser` running, `model` loaded), `recent` (last 30 requests, with `seconds` of work and `waited` in the queue);
+- `system`: CPU and memory of the server with its child processes (Chromium, the node driver; PSS on Linux, RSS elsewhere), and of the whole machine;
+- `settings`: the configuration in effect, see [configuration.md](configuration.md). `API_KEYS` shows only how many keys are set, `LLM_API_KEY` only whether it is set, and a password in `PROXY_URL` is replaced with `***`.
 
 Everything resets on restart.
 

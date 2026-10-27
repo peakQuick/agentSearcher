@@ -21,7 +21,9 @@ Where it is checked:
 
 robots.txt, sitemap, llms.txt and `.md` versions go through the same fetching, so they are protected the same way.
 
-A blocked URL goes to `failed_results` in extract with the error `blocked: private or local address`, is replaced by the snippet in search, and is simply skipped in crawl and map.
+A blocked URL goes to `failed_results` in extract, crawl and map with the error `blocked: private or local address`, and is replaced by the snippet in search.
+
+Malformed URLs (bad port, broken IPv6 host, non-http scheme) can come from the request, page links, sitemaps, redirects or search engines. They never fail the whole request: a requested one goes to `failed_results` with `invalid url: ...` (map and crawl reject a malformed root URL with 400), the rest are skipped.
 
 `AGENTSEARCHER_ALLOW_PRIVATE_URLS=1` turns the check off entirely, for example for local documentation or an intranet.
 

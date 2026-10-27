@@ -179,7 +179,8 @@ def rank_chunks(
     """Return chunks with relevance in [0, 1], best first.
 
     BM25 keeps the top `per_source` candidates of every source; the cross-encoder
-    (if enabled) rescores only those candidates.
+    (if enabled) rescores only the best RERANK_BUDGET of those, the rest follow them
+    in BM25 order with score 0 (a 50-page crawl would otherwise cost ~15 s of CPU).
     """
     if not chunks:
         return []
@@ -189,10 +190,14 @@ def rank_chunks(
         by_source.setdefault(chunks[i].source, [])
         if len(by_source[chunks[i].source]) < per_source:
             by_source[chunks[i].source].append(i)
-    candidates = sorted(i for ids in by_source.values() for i in ids)
+    candidates = sorted((i for ids in by_source.values() for i in ids), key=lambda i: -lexical[i])
     if use_model:
-        texts = [f"{chunks[i].heading}\n{chunks[i].text}".strip() for i in candidates]
+        texts = [
+            f"{chunks[i].heading}\n{chunks[i].text}".strip()
+            for i in candidates[: config.RERANK_BUDGET]
+        ]
         scores = [_sigmoid(s) for s in reranker.score(query, texts)]
+        scores += [0.0] * (len(candidates) - len(scores))
     else:
         top = max(lexical) or 1.0
         scores = [lexical[i] / top for i in candidates]

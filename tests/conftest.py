@@ -161,6 +161,16 @@ ROUTES = {
         ".then(t => { document.getElementById('root').innerHTML = '<article><p>' + t + ' '"
         f" + '{DYNAMIC}'.repeat(30) + '</p></article>' }})</script></body></html>",
     ),
+    "/broken-links": (
+        200,
+        "text/html",
+        "<html><head><title>Broken links</title><link rel=icon href='http://a:99999/i.ico'>"
+        "</head><body><article><h1>Broken links</h1>"
+        + "<p>Widgets are sturdy and cheap. Everyone should own a widget or two.</p>"
+        * 10
+        + '<a href="http://[::1">ipv6</a> <a href="http://a:99999/x">port</a>'
+        ' <a href="/docs/a">guide</a> <img src="http://a:99999/x.png"></article></body></html>',
+    ),
     "/news/a": (200, "text/html", reprint("Morning Herald")),
     "/news/b": (200, "text/html", reprint("Evening Post")),
     **{path: (200, "text/html", body) for path, body in SITE.items()},

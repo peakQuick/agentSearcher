@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from agentsearcher import config
 from agentsearcher.chunk import Chunk
 from agentsearcher.rank import bm25, dedup, rank_chunks, reranker
 
@@ -48,6 +49,24 @@ def test_rank_chunks_limits_candidates_per_source():
     ranked = rank_chunks("python release", chunks, per_source=2, use_model=False)
     assert len(ranked) == 6
     assert all(0 <= s <= 1 for _, s in ranked)
+
+
+def test_rank_chunks_rescores_at_most_budget(monkeypatch):
+    scored = []
+
+    def fake_score(query, texts):
+        scored.extend(texts)
+        return [1.0] * len(texts)
+
+    monkeypatch.setattr(reranker, "score", fake_score)
+    chunks = [Chunk(f"python {'release ' * (i % 7)}notes {i}", "", i) for i in range(300)]
+    ranked = rank_chunks("python release", chunks, per_source=1, use_model=True)
+    assert len(scored) == config.RERANK_BUDGET
+    assert len(ranked) == 300
+    # the rest follow the rescored ones, best BM25 first
+    rest = [c for c, s in ranked if s == 0]
+    lexical = bm25("python release", [f"{c.heading} {c.text}" for c in rest])
+    assert lexical == sorted(lexical, reverse=True)
 
 
 def test_cross_encoder_multilingual_relevance():

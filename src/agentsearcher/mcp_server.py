@@ -1,10 +1,17 @@
 from typing import Annotated, Literal
 
 from mcp.server.mcpserver import MCPServer
-from pydantic import Field
+from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import Field, ValidationError
 
-from agentsearcher import config, crawl, pipeline
-from agentsearcher.schemas import CrawlRequest, ExtractRequest, MapRequest, SearchRequest
+from agentsearcher import config, crawl, pipeline, stats
+from agentsearcher.schemas import (
+    CrawlRequest,
+    ExtractRequest,
+    MapRequest,
+    SearchRequest,
+    first_error,
+)
 
 server = MCPServer("agentsearcher")
 PREFIX = "tavily" if config.MCP_TAVILY_NAMES else "web"
@@ -33,6 +40,17 @@ ExtractDepth = Annotated[
     Field(description="advanced: slower (30 s per page), gets more text from complex pages"),
 ]
 Dedup = Annotated[bool, Field(description="Drop repeated and near-duplicate passages")]
+
+
+async def _run(call, request_type, **params) -> dict:
+    """Build the request and run it. Anything but a ToolError raised in a tool body reaches
+    the agent as a bare "Error executing tool", so bad arguments and a full queue become one."""
+    try:
+        return await call(request_type(**params))
+    except ValidationError as e:
+        raise ToolError(first_error(e.errors())) from None
+    except stats.Busy as e:
+        raise ToolError(str(e)) from None
 
 
 def format_search(response: dict) -> str:
@@ -101,7 +119,9 @@ async def web_search(
     ] = None,
     dedup: Dedup = True,
 ) -> str:
-    req = SearchRequest(
+    response = await _run(
+        pipeline.search,
+        SearchRequest,
         query=query,
         max_results=max_results,
         search_depth=search_depth,
@@ -114,7 +134,7 @@ async def web_search(
         max_per_domain=max_per_domain,
         dedup=dedup,
     )
-    return format_search(await pipeline.search(req))
+    return format_search(response)
 
 
 @server.tool(
@@ -133,8 +153,15 @@ async def web_extract(
         Literal["markdown", "text"], Field(description="text: plain text without markdown")
     ] = "markdown",
 ) -> str:
-    req = ExtractRequest(urls=urls, query=query, extract_depth=extract_depth, format=format)
-    return format_extract(await pipeline.extract(req))
+    response = await _run(
+        pipeline.extract,
+        ExtractRequest,
+        urls=urls,
+        query=query,
+        extract_depth=extract_depth,
+        format=format,
+    )
+    return format_extract(response)
 
 
 @server.tool(
@@ -155,7 +182,9 @@ async def web_crawl(
     extract_depth: ExtractDepth = "basic",
     dedup: Dedup = True,
 ) -> str:
-    req = CrawlRequest(
+    response = await _run(
+        crawl.crawl,
+        CrawlRequest,
         url=url,
         instructions=instructions,
         max_depth=max_depth,
@@ -167,7 +196,7 @@ async def web_crawl(
         extract_depth=extract_depth,
         dedup=dedup,
     )
-    return format_extract(await crawl.crawl(req))
+    return format_extract(response)
 
 
 @server.tool(
@@ -184,7 +213,9 @@ async def web_map(
     exclude_paths: ExcludePaths = None,
     allow_external: AllowExternal = False,
 ) -> str:
-    req = MapRequest(
+    response = await _run(
+        crawl.map_site,
+        MapRequest,
         url=url,
         instructions=instructions,
         max_depth=max_depth,
@@ -194,4 +225,7 @@ async def web_map(
         exclude_paths=exclude_paths or [],
         allow_external=allow_external,
     )
-    return "\n".join((await crawl.map_site(req))["results"])
+    lines = response["results"] + [
+        f"Failed: {r['url']}: {r['error']}" for r in response["failed_results"]
+    ]
+    return "\n".join(lines)

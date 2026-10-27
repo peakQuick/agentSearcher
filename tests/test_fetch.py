@@ -1,6 +1,24 @@
-from agentsearcher.fetch import Fetched, is_block_page, is_challenge, needs_browser
+import pytest
+
+from agentsearcher.fetch import Fetched, is_block_page, is_challenge, needs_browser, url_error
 
 ARTICLE = "Real article text about widgets and their many uses. " * 40
+
+
+@pytest.mark.parametrize(
+    ("url", "error"),
+    [
+        ("https://[::1", "invalid url: Invalid IPv6 URL"),
+        ("http://a:99999/", "invalid url: Port out of range"),
+        ("http://a:x/", "invalid url: Port could not be cast"),
+        ("ftp://a.com/f", "blocked: unsupported url"),
+        ("https:///path", "blocked: unsupported url"),
+        ("https://example.com/a?b=1", None),
+    ],
+)
+def test_url_error(url, error):
+    assert (url_error(url) or "").startswith(error or "")
+    assert (url_error(url) is None) == (error is None)
 
 
 def test_challenge_detection():

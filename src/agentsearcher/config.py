@@ -31,8 +31,14 @@ CACHE_TTL = float(_env("CACHE_TTL", "900"))
 CACHE_MB = float(_env("CACHE_MB", "64"))
 MAX_FETCHES = int(_env("MAX_FETCHES", "8"))
 MAX_RENDERS = int(_env("MAX_RENDERS", "2"))
+_CORES = os.cpu_count() or 2
+MAX_REQUESTS = int(_env("MAX_REQUESTS", str(_CORES)))
+MAX_CRAWLS = int(_env("MAX_CRAWLS", str(max(1, _CORES // 4))))
+MAX_CPU_JOBS = int(_env("MAX_CPU_JOBS", str(max(1, _CORES // 2))))
+QUEUE_TIMEOUT = float(_env("QUEUE_TIMEOUT", "120"))
 
 RERANK_THREADS = int(_env("RERANK_THREADS", "2"))
+RERANK_BUDGET = int(_env("RERANK_BUDGET", "100"))
 
 LLM_BASE_URL = _env("LLM_BASE_URL", "").rstrip("/")
 LLM_MODEL = _env("LLM_MODEL", "local")

@@ -9,8 +9,10 @@ from urllib.parse import urlsplit
 from agentsearcher import config, stats
 from agentsearcher.chunk import chunk_markdown
 from agentsearcher.extract import Page, to_text
+from agentsearcher.fetch import url_error
 from agentsearcher.pipeline import (
     SEPARATOR,
+    cpu_bound,
     ensure_janitor,
     load_or_error,
     matches_domain,
@@ -80,6 +82,9 @@ def _candidates(links: list[Link], allowed, seen: set[str]) -> dict[str, Link]:
     """New allowed links keyed by page_key, as (url, text used for relevance)."""
     out: dict[str, Link] = {}
     for link, text in links:
+        # sitemaps and llms.txt are not validated like page links
+        if url_error(link):
+            continue
         key = page_key(link)
         if key not in seen and key not in out and allowed(link):
             out[key] = (link, f"{text} {urlsplit(link).path.replace('/', ' ')}")
@@ -99,10 +104,13 @@ def _take(candidates: dict[str, Link], seen: set[str], limit: int | None = None)
     return [candidates[k] for k in keys]
 
 
-async def walk(req: MapRequest, *, fetch_last_level: bool, advanced: bool) -> tuple[list, list]:
+async def walk(
+    req: MapRequest, *, fetch_last_level: bool, advanced: bool
+) -> tuple[list, list, list]:
     """Breadth-first walk from req.url, seeded with the site's llms.txt and sitemap.
 
-    Returns (discovered urls in discovery order, loaded pages in load order). Pages are
+    Returns (discovered urls in discovery order, loaded pages in load order, failed loads
+    as {url, error}). Pages are
     fetched for depths 0..max_depth (or 0..max_depth-1 when only links are needed).
     llms.txt and sitemap urls join depth 1 and are not limited by max_breadth.
     """
@@ -136,9 +144,9 @@ async def walk(req: MapRequest, *, fetch_last_level: bool, advanced: bool) -> tu
             _take(llms_seeds, seen) + _take(sitemap_seeds, seen), req.instructions
         )
         log.info("map from llms.txt/sitemap only: %d urls", len(seeds))
-        return [root] + [u for u, _ in seeds], []
+        return [root] + [u for u, _ in seeds], [], []
 
-    discovered, pages = [root], []
+    discovered, pages, failed = [root], [], []
     level: list[Link] = [(root, "")]
     last_fetched = req.max_depth if fetch_last_level else req.max_depth - 1
     for depth in range(last_fetched + 1):
@@ -165,8 +173,9 @@ async def walk(req: MapRequest, *, fetch_last_level: bool, advanced: bool) -> tu
                     for url, _ in batch
                 )
             )
-            for page in loaded:
+            for (url, _), page in zip(batch, loaded, strict=True):
                 if not isinstance(page, Page):
+                    failed.append({"url": url, "error": page})
                     continue
                 seen.add(page_key(page.url))
                 pages.append(page)
@@ -187,18 +196,19 @@ async def walk(req: MapRequest, *, fetch_last_level: bool, advanced: bool) -> tu
         level = next_level
         if not level:
             break
-    return discovered, pages
+    return discovered, pages, failed
 
 
 @stats.tracked("map", lambda req: req.url)
 async def map_site(req: MapRequest) -> dict:
     started = time.monotonic()
     ensure_janitor()
-    discovered, _ = await walk(req, fetch_last_level=False, advanced=False)
+    discovered, _, failed = await walk(req, fetch_last_level=False, advanced=False)
     results = discovered[: req.limit]
     response = {
         "base_url": req.url,
         "results": results,
+        "failed_results": failed,
         "response_time": round(time.monotonic() - started, 2),
         "request_id": str(uuid.uuid4()),
     }
@@ -215,7 +225,7 @@ async def crawl(req: CrawlRequest) -> dict:
     started = time.monotonic()
     ensure_janitor()
     advanced = req.extract_depth == "advanced"
-    _, pages = await walk(req, fetch_last_level=True, advanced=advanced)
+    _, pages, failed = await walk(req, fetch_last_level=True, advanced=advanced)
 
     by_source: dict[int, list[str]] = {}
     if req.instructions:
@@ -226,7 +236,7 @@ async def crawl(req: CrawlRequest) -> dict:
         ]
         if req.dedup:
             chunks = dedup(chunks)
-        ranked = await asyncio.to_thread(
+        ranked = await cpu_bound(
             rank_chunks, req.instructions, chunks, req.chunks_per_source + 2, True
         )
         for c, _ in ranked:
@@ -252,6 +262,7 @@ async def crawl(req: CrawlRequest) -> dict:
     response = {
         "base_url": req.url,
         "results": results,
+        "failed_results": failed,
         "response_time": round(time.monotonic() - started, 2),
         "request_id": str(uuid.uuid4()),
     }

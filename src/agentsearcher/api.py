@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 from contextlib import asynccontextmanager
 from importlib.metadata import version
@@ -17,7 +18,13 @@ from agentsearcher import crawl as crawl_module
 from agentsearcher import search as search_module
 from agentsearcher.fetch import renderer
 from agentsearcher.rank import reranker
-from agentsearcher.schemas import CrawlRequest, ExtractRequest, MapRequest, SearchRequest
+from agentsearcher.schemas import (
+    CrawlRequest,
+    ExtractRequest,
+    MapRequest,
+    SearchRequest,
+    first_error,
+)
 
 usage = {"requests": 0, "credits": 0}
 DASHBOARD = Path(__file__).with_name("dashboard.html")
@@ -43,12 +50,14 @@ async def _api_error(_request: Request, exc: ApiError):
     return JSONResponse({"detail": {"error": exc.message}}, status_code=exc.status)
 
 
+@app.exception_handler(stats.Busy)
+async def _busy(_request: Request, exc: stats.Busy):
+    return JSONResponse({"detail": {"error": str(exc)}}, status_code=503)
+
+
 @app.exception_handler(RequestValidationError)
 async def _validation_error(_request: Request, exc: RequestValidationError):
-    first = exc.errors()[0]
-    where = ".".join(str(p) for p in first["loc"] if p != "body")
-    message = f"{where}: {first['msg']}" if where else first["msg"]
-    return JSONResponse({"detail": {"error": message}}, status_code=400)
+    return JSONResponse({"detail": {"error": first_error(exc.errors())}}, status_code=400)
 
 
 def _authorize(request: Request, body_key: str | None):
@@ -107,6 +116,17 @@ async def health():
     return {"status": "ok"}
 
 
+def _settings() -> dict:
+    """Effective configuration, as read from the environment at start. Secrets are hidden:
+    keys show only whether they are set, a proxy loses its password."""
+    values = {k: v for k, v in vars(config).items() if k.isupper() and not k.startswith("_")}
+    values["API_KEYS"] = f"{len(config.API_KEYS)} set" if config.API_KEYS else None
+    values["LLM_API_KEY"] = "set" if config.LLM_API_KEY else None
+    if config.PROXY_URL:
+        values["PROXY_URL"] = re.sub(r"//([^:@/]*):[^@/]*@", r"//\1:***@", config.PROXY_URL)
+    return values
+
+
 @app.get("/stats")
 async def get_stats(request: Request):
     _authorize(request, None)
@@ -116,6 +136,7 @@ async def get_stats(request: Request):
         "uptime": round(time.time() - stats.started),
         "requests": stats.requests,
         "pages": stats.pages,
+        "queue": {**stats.queue, "max_requests": config.MAX_REQUESTS},
         "cache": {
             "pages": len(cache._items),
             "mb": round(cache._size / 2**20, 1),
@@ -127,6 +148,7 @@ async def get_stats(request: Request):
         },
         "system": await asyncio.to_thread(stats.system),
         "recent": list(stats.recent),
+        "settings": _settings(),
     }
 
 

@@ -1,8 +1,19 @@
 import re
+from collections.abc import Sequence
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from agentsearcher.fetch import url_error
+
+
+def first_error(errors: Sequence[Any]) -> str:
+    """The first pydantic error as `field: message`, for API and MCP error replies."""
+    first = errors[0]
+    where = ".".join(str(p) for p in first["loc"] if p != "body")
+    message = first["msg"].removeprefix("Value error, ")
+    return f"{where}: {message}" if where else message
 
 
 class SearchRequest(BaseModel):
@@ -100,7 +111,10 @@ class MapRequest(BaseModel):
     @field_validator("url")
     @classmethod
     def _scheme(cls, url: str) -> str:
-        return url if "://" in url else f"https://{url}"
+        url = url if "://" in url else f"https://{url}"
+        if error := url_error(url):
+            raise ValueError(error)
+        return url
 
 
 class CrawlRequest(MapRequest):

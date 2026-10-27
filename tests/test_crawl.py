@@ -105,6 +105,27 @@ async def test_timeout_returns_partial_result(site):
     assert response["response_time"] < 3
 
 
+async def test_unreachable_root_is_reported(site):
+    url = "http://127.0.0.1:1/docs/"
+    for response in (
+        await crawl.map_site(MapRequest(url=url, timeout=10)),
+        await crawl.crawl(CrawlRequest(url=url, timeout=10)),
+    ):
+        assert [r["url"] for r in response["failed_results"]] == [url]
+        assert response["failed_results"][0]["error"]
+
+
+async def test_broken_links_are_skipped(site):
+    response = await crawl.crawl(CrawlRequest(url=f"{site}/broken-links"))
+    assert paths(site, [r["url"] for r in response["results"]]) == ["/broken-links", "/docs/a"]
+    assert response["failed_results"] == []
+
+
+def test_invalid_root_url_rejected():
+    with pytest.raises(ValidationError, match="Port out of range"):
+        MapRequest(url="http://a:99999/")
+
+
 def test_invalid_regex_rejected():
     with pytest.raises(ValidationError, match="invalid regex"):
         MapRequest(url="https://a.com", select_paths=["/docs/("])

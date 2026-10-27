@@ -45,7 +45,7 @@ Development and tests: Linux (Arch), Python 3.14, i7-7500U, 7.5 GB RAM, no GPU. 
 ## Memory
 
 - Peak ~1 GB while the browser is open: Chromium ~300–380 MB, patchright node driver ~125 MB, model ~225 MB. Everything is unloaded after `IDLE_TTL` (120 s) of inactivity.
-- There is no limit on concurrent requests to the server, only on what they share: downloads (`MAX_FETCHES`), browser renders (`MAX_RENDERS`) and 2 requests per host; everything above that waits. Many parallel heavy requests (crawl, `advanced`) on a low-RAM machine can run out of memory. This has not been load-tested.
+- Concurrent requests are limited (`MAX_REQUESTS`, `MAX_CRAWLS`) and CPU work is limited (`MAX_CPU_JOBS`), see [how-it-works](how-it-works.md#concurrency); above that requests wait in a queue and, after `QUEUE_TIMEOUT`, fail with 503. The defaults follow the core count, not the RAM: on a machine with many cores and little RAM, lower `MAX_REQUESTS` and `MAX_CRAWLS`.
 
 ## PDF
 

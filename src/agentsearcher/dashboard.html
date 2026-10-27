@@ -308,7 +308,10 @@ function render(s) {
   const kinds = Object.entries(s.requests).filter(([, r]) => r.ok + r.failed);
   const ok = kinds.reduce((n, [, r]) => n + r.ok, 0), failed = kinds.reduce((n, [, r]) => n + r.failed, 0);
   $("requests").replaceChildren(withFailed(ok + failed, failed));
-  $("requests-sub").textContent = kinds.map(([k, r]) => `${k} ${r.ok + r.failed}`).join(" · ") || "none yet";
+  const q = s.queue;
+  $("requests-sub").textContent = q.active + q.queued
+    ? `${q.active} of ${q.max_requests} running · ${q.queued} queued`
+    : kinds.map(([k, r]) => `${k} ${r.ok + r.failed}`).join(" · ") || "none yet";
   const p = s.pages;
   $("pages").replaceChildren(withFailed((p.loaded || 0) + (p.cached || 0), p.failed || 0));
   $("pages-sub").textContent = `${p.cached || 0} from cache · ${p.rendered || 0} via browser`;
@@ -334,7 +337,7 @@ function render(s) {
   },
     el("div", {className: "line"},
       el("span", {className: `kind ${r.kind}`}, r.kind),
-      el("span", {className: "meta"}, `${r.seconds.toFixed(1)} s · ${ago(r.time)}`)),
+      el("span", {className: "meta"}, `${r.waited >= 0.1 ? `waited ${r.waited.toFixed(1)} s · ` : ""}${r.seconds.toFixed(1)} s · ${ago(r.time)}`)),
     el("div", {className: "target"}, r.target),
     r.error ? el("div", {className: "err"}, r.error) : null,
   )) : [el("div", {className: "empty"}, "Requests from the API, MCP and CLI show up here.")]));
