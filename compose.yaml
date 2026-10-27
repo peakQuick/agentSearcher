@@ -1,0 +1,20 @@
+services:
+  agentsearcher:
+    build: .
+    image: agentsearcher
+    ports:
+      # HTTP API and MCP (/mcp). Only this machine can connect; to open it to the network,
+      # drop "127.0.0.1:" and set AGENTSEARCHER_API_KEYS
+      - "127.0.0.1:8484:8484"
+    shm_size: 512m # Chromium needs more shared memory than Docker's default 64 MB
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # reach Ollama or a proxy on the host
+    environment:
+      AGENTSEARCHER_LOG_LEVEL: INFO
+      # AGENTSEARCHER_API_KEYS: change-me
+      # AGENTSEARCHER_LLM_BASE_URL: http://host.docker.internal:11434/v1
+      # AGENTSEARCHER_PROXY_URL: socks5://host.docker.internal:1080
+      # AGENTSEARCHER_DOMAIN_RULES: /config/domain-rules.txt
+    # volumes:
+    #   - ./domain-rules.txt:/config/domain-rules.txt:ro

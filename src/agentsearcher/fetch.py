@@ -59,7 +59,7 @@ BROWSER_ARGS = [
     "--disable-gpu",
     "--in-process-gpu",
     "--js-flags=--max-old-space-size=256",
-    "--renderer-process-limit=2",
+    f"--renderer-process-limit={config.MAX_RENDERS}",
     "--disable-site-isolation-trials",
     "--disable-features=IsolateOrigins,site-per-process,Translate,OptimizationHints,MediaRouter",
     "--disable-extensions",
@@ -131,7 +131,7 @@ class DomainMemory:
 
 
 js_domains = DomainMemory()
-_global_sem = asyncio.Semaphore(8)
+_global_sem = asyncio.Semaphore(config.MAX_FETCHES)
 _host_sems: defaultdict[str, asyncio.Semaphore] = defaultdict(lambda: asyncio.Semaphore(2))
 
 
@@ -302,7 +302,7 @@ class Renderer:
         self._pw = None
         self._browser = None
         self._lock = asyncio.Lock()
-        self._sem = asyncio.Semaphore(2)
+        self._sem = asyncio.Semaphore(config.MAX_RENDERS)
         self._active = 0
         self._last_used = 0.0
 

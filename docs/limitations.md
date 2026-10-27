@@ -45,7 +45,7 @@ Development and tests: Linux (Arch), Python 3.14, i7-7500U, 7.5 GB RAM, no GPU. 
 ## Memory
 
 - Peak ~1 GB while the browser is open: Chromium ~300–380 MB, patchright node driver ~125 MB, model ~225 MB. Everything is unloaded after `IDLE_TTL` (120 s) of inactivity.
-- There is no limit on concurrent requests to the server. Many parallel heavy requests (crawl, `advanced`) on a low-RAM machine can run out of memory. This has not been load-tested.
+- There is no limit on concurrent requests to the server, only on what they share: downloads (`MAX_FETCHES`), browser renders (`MAX_RENDERS`) and 2 requests per host; everything above that waits. Many parallel heavy requests (crawl, `advanced`) on a low-RAM machine can run out of memory. This has not been load-tested.
 
 ## PDF
 
@@ -74,7 +74,7 @@ Development and tests: Linux (Arch), Python 3.14, i7-7500U, 7.5 GB RAM, no GPU. 
 - `include_image_descriptions` returns the image title from search, not a generated description.
 - `follow_up_questions` is always `null`.
 - `/usage` counts "credits" in process memory: the counter has no effect on anything and resets on restart.
-- There is no page cache between requests: the same URL is fetched again every time. Only robots.txt, sitemap and llms.txt (1 h) and the list of JS domains (1 h) are cached, all in process memory.
+- Caches live in process memory only: loaded pages and search engine results (`CACHE_TTL`, 15 min), robots.txt, sitemap and llms.txt (1 h), the list of JS domains (1 h). They are lost on restart, and the HTTP API and the MCP server run as separate processes with separate caches. A page changed within `CACHE_TTL` is returned in its old version.
 
 ## Security
 

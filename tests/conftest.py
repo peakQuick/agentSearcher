@@ -303,6 +303,8 @@ def _allow_fixture_sites():
     from agentsearcher import config
 
     config.ALLOW_PRIVATE_URLS = True
+    # tests load the same urls again and expect real fetches; cache tests turn it back on
+    config.CACHE_TTL = 0
 
 
 @pytest.fixture(scope="session", autouse=True)

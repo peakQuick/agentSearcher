@@ -1,14 +1,26 @@
+import asyncio
+import time
 from contextlib import asynccontextmanager
+from importlib.metadata import version
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.applications import Starlette
+from starlette.datastructures import Headers
+from starlette.middleware.cors import CORSMiddleware
+from starlette.routing import Mount
 
-from agentsearcher import config, pipeline
+from agentsearcher import config, pipeline, stats
 from agentsearcher import crawl as crawl_module
+from agentsearcher import search as search_module
+from agentsearcher.fetch import renderer
+from agentsearcher.rank import reranker
 from agentsearcher.schemas import CrawlRequest, ExtractRequest, MapRequest, SearchRequest
 
 usage = {"requests": 0, "credits": 0}
+DASHBOARD = Path(__file__).with_name("dashboard.html")
 
 
 class ApiError(Exception):
@@ -93,3 +105,76 @@ async def get_usage(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/stats")
+async def get_stats(request: Request):
+    _authorize(request, None)
+    cache = pipeline.page_cache
+    return {
+        "version": version("agentsearcher"),
+        "uptime": round(time.time() - stats.started),
+        "requests": stats.requests,
+        "pages": stats.pages,
+        "cache": {
+            "pages": len(cache._items),
+            "mb": round(cache._size / 2**20, 1),
+            "searches": len(search_module._hits_cache),
+        },
+        "components": {
+            "browser": renderer._browser is not None,
+            "model": reranker._session is not None,
+        },
+        "system": await asyncio.to_thread(stats.system),
+        "recent": list(stats.recent),
+    }
+
+
+@app.get("/", include_in_schema=False)
+async def dashboard():
+    return HTMLResponse(DASHBOARD.read_text(encoding="utf-8"))
+
+
+def cors(asgi_app):
+    """Browser clients (llama.cpp webui) need CORS preflight and a readable session header."""
+    return CORSMiddleware(
+        asgi_app,
+        allow_origins=["*"],
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["*"],
+        expose_headers=["mcp-session-id"],
+    )
+
+
+def with_mcp(host: str):
+    """The API plus the MCP server (streamable HTTP) at /mcp, in one process: one page cache,
+    browser and model. API_KEYS applies to /mcp as well."""
+    from agentsearcher.mcp_server import server
+
+    mcp_app = server.streamable_http_app(host=host)
+
+    async def guarded_mcp(scope, receive, send):
+        key = Headers(scope=scope).get("authorization", "").removeprefix("Bearer ").strip()
+        if config.API_KEYS and key not in config.API_KEYS:
+            await JSONResponse(
+                {"detail": {"error": "Unauthorized: missing or invalid API key."}}, 401
+            )(scope, receive, send)
+        else:
+            await mcp_app(scope, receive, send)
+
+    mcp_cors = cors(guarded_mcp)
+
+    async def dispatch(scope, receive, send):
+        if scope["path"].rstrip("/") == "/mcp":
+            await mcp_cors(scope, receive, send)
+        else:
+            await app(scope, receive, send)
+
+    @asynccontextmanager
+    async def both_lifespans(_app):
+        # mounted apps don't get lifespan events, so run both here
+        async with server.session_manager.run():
+            yield
+        await pipeline.shutdown()
+
+    return Starlette(routes=[Mount("", app=dispatch)], lifespan=both_lifespans)

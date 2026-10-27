@@ -6,7 +6,7 @@ import time
 import uuid
 from urllib.parse import urlsplit
 
-from agentsearcher import config
+from agentsearcher import config, stats
 from agentsearcher.chunk import chunk_markdown
 from agentsearcher.extract import Page, to_text
 from agentsearcher.pipeline import (
@@ -190,6 +190,7 @@ async def walk(req: MapRequest, *, fetch_last_level: bool, advanced: bool) -> tu
     return discovered, pages
 
 
+@stats.tracked("map", lambda req: req.url)
 async def map_site(req: MapRequest) -> dict:
     started = time.monotonic()
     ensure_janitor()
@@ -209,6 +210,7 @@ async def map_site(req: MapRequest) -> dict:
     return response
 
 
+@stats.tracked("crawl", lambda req: req.url)
 async def crawl(req: CrawlRequest) -> dict:
     started = time.monotonic()
     ensure_janitor()

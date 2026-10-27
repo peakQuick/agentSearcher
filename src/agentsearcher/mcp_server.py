@@ -1,12 +1,38 @@
-from typing import Literal
+from typing import Annotated, Literal
 
 from mcp.server.mcpserver import MCPServer
+from pydantic import Field
 
 from agentsearcher import config, crawl, pipeline
 from agentsearcher.schemas import CrawlRequest, ExtractRequest, MapRequest, SearchRequest
 
 server = MCPServer("agentsearcher")
 PREFIX = "tavily" if config.MCP_TAVILY_NAMES else "web"
+
+# parameter descriptions are what the agent sees in the tool schema; keep them to one line
+SiteUrl = Annotated[str, Field(description="Root URL of the site, e.g. https://docs.python.org/3/")]
+Instructions = Annotated[
+    str | None,
+    Field(description="What you are looking for; the most relevant links are followed first"),
+]
+MaxDepth = Annotated[int, Field(description="How many link hops from the root (1-5)")]
+MaxBreadth = Annotated[int, Field(description="How many new links to take from each page")]
+SelectPaths = Annotated[
+    list[str] | None,
+    Field(description='Only URLs whose path matches one of these regexes, e.g. ["/docs/.*"]'),
+]
+ExcludePaths = Annotated[
+    list[str] | None, Field(description="Skip URLs whose path matches one of these regexes")
+]
+AllowExternal = Annotated[
+    bool,
+    Field(description="Also follow links to other domains; by default the crawl stays on the site"),
+]
+ExtractDepth = Annotated[
+    Literal["basic", "advanced"],
+    Field(description="advanced: slower (30 s per page), gets more text from complex pages"),
+]
+Dedup = Annotated[bool, Field(description="Drop repeated and near-duplicate passages")]
 
 
 def format_search(response: dict) -> str:
@@ -35,20 +61,45 @@ def format_extract(response: dict) -> str:
 @server.tool(
     name=f"{PREFIX}_search",
     description="Search the web. Returns the most relevant passages of each result page, "
-    "already trimmed to fit a small context window.",
+    f"already trimmed to fit a small context window. To read a whole result page, "
+    f"pass its URL to {PREFIX}_extract.",
 )
 async def web_search(
-    query: str,
-    max_results: int = 5,
-    search_depth: Literal["basic", "advanced", "fast", "ultra-fast"] = "basic",
-    topic: Literal["general", "news"] = "general",
-    time_range: Literal["day", "week", "month", "year"] | None = None,
-    include_domains: list[str] | None = None,
-    exclude_domains: list[str] | None = None,
-    include_raw_content: bool = False,
-    country: str | None = None,
-    max_per_domain: int | None = None,
-    dedup: bool = True,
+    query: Annotated[
+        str, Field(description="Search query, as you would type it in a search engine")
+    ],
+    max_results: Annotated[int, Field(description="Number of results (0-20)")] = 5,
+    search_depth: Annotated[
+        Literal["basic", "advanced", "fast", "ultra-fast"],
+        Field(
+            description="ultra-fast: snippets only; fast: pages without JS; "
+            "basic: + JS pages and neural ranking; advanced: + more candidates, slower"
+        ),
+    ] = "basic",
+    topic: Annotated[
+        Literal["general", "news"], Field(description="news: search news articles")
+    ] = "general",
+    time_range: Annotated[
+        Literal["day", "week", "month", "year"] | None,
+        Field(description="Only results from the last day/week/month/year"),
+    ] = None,
+    include_domains: Annotated[
+        list[str] | None, Field(description="Only results from these domains, e.g. ['github.com']")
+    ] = None,
+    exclude_domains: Annotated[
+        list[str] | None, Field(description="Never return results from these domains")
+    ] = None,
+    include_raw_content: Annotated[
+        bool, Field(description="Also return the full text of each page (long)")
+    ] = False,
+    country: Annotated[
+        str | None,
+        Field(description="Search region, e.g. 'germany'; guessed from the query if empty"),
+    ] = None,
+    max_per_domain: Annotated[
+        int | None, Field(description="At most this many results from one domain")
+    ] = None,
+    dedup: Dedup = True,
 ) -> str:
     req = SearchRequest(
         query=query,
@@ -68,14 +119,19 @@ async def web_search(
 
 @server.tool(
     name=f"{PREFIX}_extract",
-    description="Extract page content from URLs. With `query`, returns only the passages "
-    "relevant to it instead of the whole page.",
+    description="Extract page content from URLs (HTML, JS pages, PDF). With `query`, returns only "
+    "the passages relevant to it instead of the whole page.",
 )
 async def web_extract(
-    urls: list[str],
-    query: str | None = None,
-    extract_depth: Literal["basic", "advanced"] = "basic",
-    format: Literal["markdown", "text"] = "markdown",
+    urls: Annotated[list[str], Field(description="1-20 URLs to read")],
+    query: Annotated[
+        str | None,
+        Field(description="Return only passages relevant to this question instead of whole pages"),
+    ] = None,
+    extract_depth: ExtractDepth = "basic",
+    format: Annotated[
+        Literal["markdown", "text"], Field(description="text: plain text without markdown")
+    ] = "markdown",
 ) -> str:
     req = ExtractRequest(urls=urls, query=query, extract_depth=extract_depth, format=format)
     return format_extract(await pipeline.extract(req))
@@ -84,19 +140,20 @@ async def web_extract(
 @server.tool(
     name=f"{PREFIX}_crawl",
     description="Crawl a website from a root URL and return page contents. With "
-    "`instructions`, follows the most relevant links first and returns only matching passages.",
+    "`instructions`, follows the most relevant links first and returns only matching passages. "
+    f"To only list a site's URLs, use {PREFIX}_map.",
 )
 async def web_crawl(
-    url: str,
-    instructions: str | None = None,
-    max_depth: int = 1,
-    max_breadth: int = 20,
-    limit: int = 20,
-    select_paths: list[str] | None = None,
-    exclude_paths: list[str] | None = None,
-    allow_external: bool = False,
-    extract_depth: Literal["basic", "advanced"] = "basic",
-    dedup: bool = True,
+    url: SiteUrl,
+    instructions: Instructions = None,
+    max_depth: MaxDepth = 1,
+    max_breadth: MaxBreadth = 20,
+    limit: Annotated[int, Field(description="Maximum number of pages to return")] = 20,
+    select_paths: SelectPaths = None,
+    exclude_paths: ExcludePaths = None,
+    allow_external: AllowExternal = False,
+    extract_depth: ExtractDepth = "basic",
+    dedup: Dedup = True,
 ) -> str:
     req = CrawlRequest(
         url=url,
@@ -118,14 +175,14 @@ async def web_crawl(
     description="List the URLs of a website (site map) starting from a root URL, without content.",
 )
 async def web_map(
-    url: str,
-    instructions: str | None = None,
-    max_depth: int = 1,
-    max_breadth: int = 20,
-    limit: int = 50,
-    select_paths: list[str] | None = None,
-    exclude_paths: list[str] | None = None,
-    allow_external: bool = False,
+    url: SiteUrl,
+    instructions: Instructions = None,
+    max_depth: MaxDepth = 1,
+    max_breadth: MaxBreadth = 20,
+    limit: Annotated[int, Field(description="Maximum number of URLs to return")] = 50,
+    select_paths: SelectPaths = None,
+    exclude_paths: ExcludePaths = None,
+    allow_external: AllowExternal = False,
 ) -> str:
     req = MapRequest(
         url=url,

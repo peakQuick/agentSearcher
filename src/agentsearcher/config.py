@@ -14,6 +14,7 @@ SEARCH_BACKENDS = [
     for b in _env("SEARCH_BACKENDS", "duckduckgo,yahoo,yandex,brave,mojeek,bing").split(",")
 ]
 PROXY_URL = _env("PROXY_URL", "") or None
+DOMAIN_RULES = _env("DOMAIN_RULES", "")
 RESPECT_ROBOTS = _env("RESPECT_ROBOTS", "1") != "0"
 MCP_TAVILY_NAMES = _env("MCP_TAVILY_NAMES", "0") == "1"
 ALLOW_PRIVATE_URLS = _env("ALLOW_PRIVATE_URLS", "0") == "1"
@@ -25,6 +26,11 @@ MAX_RESPONSE_CHARS = int(_env("MAX_RESPONSE_CHARS", "60000"))
 CHUNK_CHARS = int(_env("CHUNK_CHARS", "600"))
 MAX_HTML_BYTES = int(_env("MAX_HTML_BYTES", str(3 * 1024 * 1024)))
 MAX_PDF_BYTES = int(_env("MAX_PDF_BYTES", str(10 * 1024 * 1024)))
+
+CACHE_TTL = float(_env("CACHE_TTL", "900"))
+CACHE_MB = float(_env("CACHE_MB", "64"))
+MAX_FETCHES = int(_env("MAX_FETCHES", "8"))
+MAX_RENDERS = int(_env("MAX_RENDERS", "2"))
 
 RERANK_THREADS = int(_env("RERANK_THREADS", "2"))
 

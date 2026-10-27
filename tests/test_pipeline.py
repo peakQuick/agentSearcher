@@ -1,7 +1,10 @@
-import pytest
-from conftest import DYNAMIC
+import asyncio
 
-from agentsearcher import config, pipeline
+import pytest
+from conftest import DYNAMIC, Handler
+
+from agentsearcher import config, pipeline, stats
+from agentsearcher import search as search_module
 from agentsearcher.fetch import FetchError, js_domains
 from agentsearcher.schemas import ExtractRequest, SearchRequest
 from agentsearcher.search import Hit
@@ -177,3 +180,124 @@ async def test_search_domain_filters(monkeypatch):
     req = SearchRequest(query="x", search_depth="ultra-fast", exclude_domains=["https://a.com"])
     response = await pipeline.search(req)
     assert [r["url"] for r in response["results"]] == ["https://sub.b.org/2"]
+
+
+def test_fuse_prefers_urls_engines_agree_on():
+    def row(path):
+        return {"href": f"https://site.com/{path}", "title": path}
+
+    one = [row("seo"), row("shared"), row("a")]
+    two = [row("b"), row("c"), row("shared")]
+    fused = [r["title"] for r in search_module.fuse([one, two])]
+    assert fused == ["shared", "seo", "b", "c", "a"]
+
+
+async def test_domain_rules(monkeypatch, tmp_path):
+    rules = tmp_path / "rules.txt"
+    rules.write_text(
+        "# spam\nblock spam.com\nlower https://www.meh.com/\nraise good.org  # docs\nbogus line\n"
+    )
+    loaded = pipeline.load_domain_rules(str(rules))
+    assert loaded == {"block": ["spam.com"], "lower": ["meh.com"], "raise": ["good.org"]}
+
+    hits = [Hit(f"https://{d}/1", d, f"widgets {d} " * 5) for d in ["spam.com", "meh.com"]]
+    hits.append(Hit("https://docs.good.org/1", "G", "widgets good " * 5))
+
+    async def fake_search(*_args, **_kwargs):
+        return hits
+
+    monkeypatch.setattr(pipeline, "web_search", fake_search)
+    monkeypatch.setattr(pipeline, "domain_rules", loaded)
+    req = SearchRequest(query="widgets", search_depth="ultra-fast")
+    results = (await pipeline.search(req))["results"]
+    assert [r["url"] for r in results] == ["https://docs.good.org/1", "https://meh.com/1"]
+    assert results[1]["score"] < 0.9
+
+
+async def test_stats_count_requests_and_pages(site, monkeypatch):
+    search_stats = dict(stats.requests["search"])
+    failed_pages = stats.pages["failed"]
+
+    async def fake_search(*_args, **_kwargs):
+        return [Hit("https://a.com/1", "A", "widgets " * 5)]
+
+    async def broken_search(*_args, **_kwargs):
+        raise RuntimeError("engines down")
+
+    monkeypatch.setattr(pipeline, "web_search", fake_search)
+    await pipeline.search(SearchRequest(query="widgets", search_depth="ultra-fast"))
+    assert stats.requests["search"]["ok"] == search_stats["ok"] + 1
+
+    monkeypatch.setattr(pipeline, "web_search", broken_search)
+    with pytest.raises(RuntimeError):
+        await pipeline.search(SearchRequest(query="broken", search_depth="ultra-fast"))
+    assert stats.requests["search"]["failed"] == search_stats["failed"] + 1
+    assert stats.recent[0]["target"] == "broken"
+    assert stats.recent[0]["error"] == "engines down"
+
+    await pipeline.extract(ExtractRequest(urls=[f"{site}/missing"]))
+    assert stats.pages["failed"] == failed_pages + 1
+    assert stats.recent[0]["kind"] == "extract"
+
+
+@pytest.fixture
+def cache(monkeypatch):
+    monkeypatch.setattr(config, "CACHE_TTL", 900.0)
+    monkeypatch.setattr(pipeline, "page_cache", pipeline.PageCache())
+    return pipeline.page_cache
+
+
+async def cached_load(url, browser=True):
+    return await pipeline.load_or_error(
+        url, None, browser=browser, strict=False, recall=False, timeout=5.0
+    )
+
+
+async def test_page_cache_reuses_loaded_page(site, cache):
+    first = await cached_load(f"{site}/article")
+    fetches = Handler.hits.count("/article")
+    assert await cached_load(f"{site}/article") is first
+    assert Handler.hits.count("/article") == fetches
+
+
+async def test_page_cache_static_page_not_reused_when_browser_allowed(site, cache):
+    await cached_load(f"{site}/article", browser=False)
+    assert cache.get(f"{site}/article", False, browser=False)
+    assert cache.get(f"{site}/article", False, browser=True) is None
+
+
+async def test_page_cache_skips_errors(site, cache):
+    assert await cached_load(f"{site}/missing") == "HTTP 404"
+    assert cache.get(f"{site}/missing", False, browser=False) is None
+
+
+async def test_page_cache_expiry_and_size_limit(site, cache, monkeypatch):
+    page = await cached_load(f"{site}/article")
+    monkeypatch.setattr(config, "CACHE_TTL", 0.01)
+    cache.put("https://a.com/", False, True, page)
+    await asyncio.sleep(0.05)
+    assert cache.get("https://a.com/", False, True) is None
+    cache.prune()
+    assert list(cache._items) == [(f"{site}/article", False)]
+
+    monkeypatch.setattr(config, "CACHE_TTL", 900.0)
+    monkeypatch.setattr(config, "CACHE_MB", 1.5 * len(page.markdown) / 2**20)
+    cache.put("https://b.com/", False, True, page)
+    assert list(cache._items) == [("https://b.com/", False)]
+
+
+async def test_web_search_cache_keeps_only_non_empty(monkeypatch):
+    calls = []
+
+    async def fake_search(query, **_kwargs):
+        calls.append(query)
+        return [Hit("https://a.com/", "A", "a")] if query == "found" else []
+
+    monkeypatch.setattr(config, "CACHE_TTL", 900.0)
+    monkeypatch.setattr(search_module, "_web_search", fake_search)
+    monkeypatch.setattr(search_module, "_hits_cache", {})
+    args = {"max_results": 5, "news": False, "region": "us-en", "timelimit": None, "safe": True}
+    for _ in range(2):
+        assert len(await search_module.web_search("found", **args)) == 1
+        assert await search_module.web_search("nothing", **args) == []
+    assert calls == ["found", "nothing", "nothing"]

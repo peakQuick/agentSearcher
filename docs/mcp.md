@@ -3,11 +3,14 @@
 # MCP
 
 ```bash
-agentsearcher mcp            # stdio
-agentsearcher mcp --http     # streamable HTTP at http://127.0.0.1:8485 (PORT+1)
+agentsearcher serve          # HTTP API + MCP at http://127.0.0.1:8484/mcp (also what Docker runs)
+agentsearcher mcp            # stdio, for clients that start the server themselves
+agentsearcher mcp --http     # MCP alone, streamable HTTP at http://127.0.0.1:8485/mcp (PORT+1)
 ```
 
-The tools return compact text (title, URL, chunks) rather than JSON, sized for a small context window.
+`serve` is the recommended way for HTTP clients: the API and MCP share one process, so they share the page cache, the browser and the model. If `AGENTSEARCHER_API_KEYS` is set, `/mcp` requires `Authorization: Bearer <key>` like the API. CORS is open, so browser-based clients (llama.cpp webui and others) can connect directly.
+
+The tools return compact text (title, URL, chunks) rather than JSON, sized for a small context window. Every parameter has a one-line description in the tool schema, so the agent knows what it does without the docs.
 
 ## Tools
 
@@ -42,8 +45,12 @@ claude mcp add agentsearcher -e AGENTSEARCHER_MCP_TAVILY_NAMES=1 -- /path/to/age
 }}}
 ```
 
-### HTTP-only clients
+### HTTP clients and web UIs
 
-Run `agentsearcher mcp --http` and point the client at `http://127.0.0.1:8485/mcp`.
+Run `agentsearcher serve` (or `docker compose up -d`) and point the client at `http://127.0.0.1:8484/mcp`. With `API_KEYS`, add the header `Authorization: Bearer <key>` in the client's MCP settings.
+
+```bash
+claude mcp add --transport http agentsearcher http://127.0.0.1:8484/mcp
+```
 
 In stdio mode, logs go to stderr: stdout carries the protocol.

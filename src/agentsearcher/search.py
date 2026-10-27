@@ -1,8 +1,9 @@
 import asyncio
 import logging
 import re
+import time
+from collections import defaultdict
 from dataclasses import dataclass
-from itertools import zip_longest
 from urllib.parse import urlsplit
 
 from curl_cffi.requests import AsyncSession
@@ -62,6 +63,7 @@ LANGUAGE_REGIONS = {
 CYRILLIC = re.compile("[а-яё]", re.IGNORECASE)
 SEARXNG_RANGES = {"d": "day", "w": "week", "m": "month", "y": "year"}
 ENGINE_TIMEOUT = 5
+RRF_K = 60
 # disabled upstream in ddgs, but works and is the best engine for Russian queries
 EXTRA_ENGINES = {"text": {"yandex": Yandex}}
 
@@ -96,10 +98,28 @@ def _engines(category: str) -> dict[str, type]:
     return {**ENGINES[category], **EXTRA_ENGINES.get(category, {})}
 
 
+def fuse(rankings: list[list[dict]]) -> list[dict]:
+    """Reciprocal rank fusion: URLs found by several engines go first, so a page pushed up
+    by one engine (often SEO spam) loses to pages the engines agree on. Equal scores keep
+    the interleaved order; the first engine's row (title, snippet) is kept."""
+    rows: dict[str, dict] = {}
+    scores: defaultdict[str, float] = defaultdict(float)
+    for rank in rankings:
+        seen = set()
+        for pos, row in enumerate(rank):
+            key = url_key(row.get("href") or row.get("url") or row.get("image") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            rows.setdefault(key, row)
+            scores[key] += 1 / (RRF_K + pos + 1)
+    return [rows[k] for k in sorted(rows, key=lambda k: -scores[k])]
+
+
 async def _ddgs_search(
     category: str, query: str, region: str, timelimit: str | None, max_results: int, safe: bool
 ) -> list[dict]:
-    """Query each ddgs engine separately and interleave their rankings.
+    """Query each ddgs engine separately and fuse their rankings.
 
     ddgs' own multi-engine mode gives up on still-running engines as soon as one fails,
     which drops the results of slower working engines whenever another engine is blocked.
@@ -129,12 +149,7 @@ async def _ddgs_search(
         else:
             rankings.append(task.result())
     log.info("engines answered: %d/%d", len(rankings), len(backends))
-    merged, seen = [], set()
-    for row in (r for rank in zip_longest(*rankings) for r in rank if r):
-        key = url_key(row.get("href") or row.get("url") or row.get("image") or "")
-        if key and key not in seen:
-            seen.add(key)
-            merged.append(row)
+    merged = fuse(rankings)
     if not merged:
         raise DDGSException("no engine returned results")
     return merged[:max_results]
@@ -158,7 +173,35 @@ async def _searxng_search(
         return resp.json().get("results", [])
 
 
+_hits_cache: dict[tuple, tuple[float, list[Hit]]] = {}
+
+
 async def web_search(
+    query: str,
+    *,
+    max_results: int,
+    news: bool,
+    region: str,
+    timelimit: str | None,
+    safe: bool,
+) -> list[Hit]:
+    """_web_search() reused for CACHE_TTL; empty results (engines blocked or down) aren't kept."""
+    key = (query, max_results, news, region, timelimit, safe)
+    now = time.monotonic()
+    if (entry := _hits_cache.get(key)) and entry[0] > now:
+        log.info("cached search %r", query)
+        return list(entry[1])
+    hits = await _web_search(
+        query, max_results=max_results, news=news, region=region, timelimit=timelimit, safe=safe
+    )
+    if hits and config.CACHE_TTL > 0:
+        for k in [k for k, (expires, _) in _hits_cache.items() if expires < now]:
+            del _hits_cache[k]
+        _hits_cache[key] = (now + config.CACHE_TTL, hits)
+    return list(hits)
+
+
+async def _web_search(
     query: str,
     *,
     max_results: int,

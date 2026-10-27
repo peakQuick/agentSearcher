@@ -86,31 +86,36 @@ class CrossEncoder:
             model_file=download("sentencepiece.bpe.model")
         )
 
-    def _ids(self, text: str) -> list[int]:
-        return [i + 1 if i else UNK_ID for i in self._spm.encode(text)]
-
-    def _encode_pair(self, query_ids: list[int], text: str) -> list[int]:
-        room = MAX_TOKENS - len(query_ids) - 4
-        return [BOS_ID, *query_ids, EOS_ID, EOS_ID, *self._ids(text)[:room], EOS_ID]
+    @staticmethod
+    def _ids(spm, text: str) -> list[int]:
+        return [i + 1 if i else UNK_ID for i in spm.encode(text)]
 
     def score(self, query: str, texts: list[str]) -> list[float]:
+        """Concurrent calls run in parallel: the lock only guards loading and unloading,
+        and a call keeps its own references, so an unload mid-call can't break it."""
         with self._lock:
             if self._session is None:
                 self._load()
-            query_ids = self._ids(query)[:MAX_QUERY_TOKENS]
-            scores: list[float] = []
-            for start in range(0, len(texts), BATCH):
-                rows = [self._encode_pair(query_ids, t) for t in texts[start : start + BATCH]]
-                width = max(map(len, rows))
-                ids = np.full((len(rows), width), PAD_ID, dtype=np.int64)
-                mask = np.zeros((len(rows), width), dtype=np.int64)
-                for i, row in enumerate(rows):
-                    ids[i, : len(row)] = row
-                    mask[i, : len(row)] = 1
-                feed = {"input_ids": ids, "attention_mask": mask}
-                scores.extend(float(x) for x in self._session.run(None, feed)[0][:, 0])
+            session, spm = self._session, self._spm
             self._last_used = time.monotonic()
-            return scores
+        query_ids = self._ids(spm, query)[:MAX_QUERY_TOKENS]
+        room = MAX_TOKENS - len(query_ids) - 4
+        scores: list[float] = []
+        for start in range(0, len(texts), BATCH):
+            rows = [
+                [BOS_ID, *query_ids, EOS_ID, EOS_ID, *self._ids(spm, t)[:room], EOS_ID]
+                for t in texts[start : start + BATCH]
+            ]
+            width = max(map(len, rows))
+            ids = np.full((len(rows), width), PAD_ID, dtype=np.int64)
+            mask = np.zeros((len(rows), width), dtype=np.int64)
+            for i, row in enumerate(rows):
+                ids[i, : len(row)] = row
+                mask[i, : len(row)] = 1
+            feed = {"input_ids": ids, "attention_mask": mask}
+            scores.extend(float(x) for x in session.run(None, feed)[0][:, 0])
+        self._last_used = time.monotonic()
+        return scores
 
     def unload_if_idle(self):
         with self._lock:

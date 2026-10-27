@@ -8,13 +8,14 @@ Every command runs one request and prints compact text. With `--json`, it prints
 
 | command | what it does |
 |---|---|
-| `serve [--host H] [--port P]` | HTTP API, `127.0.0.1:8484` by default |
-| `mcp [--http] [--host H] [--port P]` | MCP server: stdio, or streamable HTTP on `PORT+1` (8485) with `--http` |
+| `serve [--host H] [--port P]` | HTTP API, `127.0.0.1:8484` by default, plus the MCP server at `/mcp` |
+| `mcp [--http] [--host H] [--port P]` | MCP server alone: stdio, or streamable HTTP on `PORT+1` (8485) with `--http` |
 | `search QUERY` | search |
 | `extract URL [URL ...]` | page contents |
 | `crawl URL` | crawl a site with page contents |
 | `map URL` | list a site's URLs |
-| `fetch-model` | download the reranker and check that it works |
+| `setup [--with-deps]` | one-time download of Chromium and the reranker; `--with-deps` also installs Chromium's system libraries (needs root, Debian/Ubuntu) |
+| `fetch-model` | download the reranker only and check that it works |
 
 ### `search`
 

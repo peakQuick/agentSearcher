@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agentsearcher</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='6.5' cy='6.5' r='4.5' fill='none' stroke='%233563e9' stroke-width='2'/%3E%3Cpath d='M10 10l4.5 4.5' stroke='%233563e9' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f3f4f6; --card: #ffffff; --text: #15181d; --muted: #6b7280; --line: #e5e7eb; --soft: #f6f7f9;
+    --accent: #3563e9; --on-accent: #ffffff; --ok: #16a34a; --bad: #dc2626;
+    --search: #3563e9; --extract: #0f9d6b; --crawl: #8b5cf6; --map: #d97706;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0f12; --card: #16191e; --text: #e7e9ec; --muted: #8b929c; --line: #262a31; --soft: #1c2026;
+      --accent: #6f93ff; --on-accent: #0d0f12; --ok: #4ade80; --bad: #f87171;
+      --search: #6f93ff; --extract: #34d399; --crawl: #a78bfa; --map: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  button, input, select { font: inherit; color: inherit; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .muted { color: var(--muted); }
+  .num { font-variant-numeric: tabular-nums; }
+
+  .app {
+    height: 100vh; display: grid; gap: 12px; padding: 12px 16px 16px;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-areas: "top top" "metrics metrics" "play recent";
+    max-width: 1400px; margin: 0 auto;
+  }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+
+  /* top bar */
+  .top { grid-area: top; display: flex; align-items: center; gap: 10px; padding: 2px 4px; }
+  .top h1 { font-size: 16px; margin: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .spacer { flex: 1; }
+  .key { display: none; gap: 6px; }
+  .key.show { display: flex; }
+  .key input { width: 200px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+  .key .run { padding: 0 14px; }
+
+  /* metrics */
+  .metrics { grid-area: metrics; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .metric { padding: 12px 16px; border-left: 1px solid var(--line); min-width: 0; }
+  .metric:first-child { border-left: 0; }
+  .metric .label { font-size: 12px; color: var(--muted); }
+  .metric .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .metric .value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .metric .sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .metric svg { width: 72px; height: 24px; flex: none; }
+  .metric svg polyline { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+  .state { display: flex; gap: 12px; margin: 4px 0 2px; font-weight: 600; }
+  .state span::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--line); margin-right: 6px; vertical-align: 1px; }
+  .state span.on::before { background: var(--ok); }
+  .bad-text { color: var(--bad); }
+
+  /* playground */
+  .play { grid-area: play; display: flex; flex-direction: column; min-height: 0; }
+  .tabs { display: flex; gap: 4px; padding: 10px 12px 0; }
+  .tab {
+    border: 0; background: none; padding: 6px 12px; border-radius: 8px; cursor: pointer; color: var(--muted); font-weight: 500;
+  }
+  .tab:hover { background: var(--soft); }
+  .tab.active { background: var(--soft); color: var(--text); }
+  .controls { padding: 10px 12px 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+  .bar { display: flex; gap: 8px; }
+  .bar input {
+    flex: 1; min-width: 0; padding: 10px 14px; font-size: 15px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--soft);
+  }
+  .bar input:focus, .opt input:focus, .extra textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; background: var(--card); }
+  .run {
+    border: 0; background: var(--accent); color: var(--on-accent); font-weight: 600; padding: 0 22px;
+    border-radius: 10px; cursor: pointer;
+  }
+  .run:disabled { opacity: .6; cursor: wait; }
+  .options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
+  .opt { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .opt input[type=number] { width: 64px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
+  .opt input[type=text] { width: 240px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
+  .seg { display: inline-flex; background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+  .seg button { border: 0; background: none; padding: 3px 10px; border-radius: 6px; cursor: pointer; color: var(--muted); font-size: 13px; }
+  .seg button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
+  .toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; user-select: none; }
+  .toggle input { accent-color: var(--accent); margin: 0; }
+  .more { font-size: 12px; color: var(--muted); background: none; border: 0; cursor: pointer; padding: 0; }
+  .more:hover { color: var(--text); }
+  .extra textarea {
+    width: 100%; min-height: 60px; resize: vertical; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--soft); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .status { display: flex; align-items: center; gap: 12px; padding: 8px 14px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); }
+  .status:empty { display: none; }
+  .output { flex: 1; overflow: auto; padding: 4px 14px 14px; min-height: 0; }
+  .empty { color: var(--muted); text-align: center; padding: 48px 16px; }
+  .result { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .result:last-child { border-bottom: 0; }
+  .result .head { display: flex; gap: 8px; align-items: baseline; }
+  .result .title { font-weight: 600; flex: 1; min-width: 0; }
+  .result .score { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .result .url { font-size: 12px; color: var(--ok); word-break: break-all; }
+  .result .text {
+    white-space: pre-wrap; word-break: break-word; margin-top: 6px; font-size: 13px;
+    display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer;
+  }
+  .result .text.open { display: block; cursor: auto; }
+  .answer { background: var(--soft); border-radius: 10px; padding: 10px 14px; margin: 10px 0 4px; }
+  .error { color: var(--bad); white-space: pre-wrap; padding: 12px 0; }
+  pre {
+    background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 10px 0 0;
+    font-size: 12px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  }
+
+  /* recent */
+  .recent { grid-area: recent; display: flex; flex-direction: column; min-height: 0; }
+  .recent h2 { font-size: 13px; margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+  .feed { flex: 1; overflow: auto; min-height: 0; }
+  .item { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .item:hover { background: var(--soft); }
+  .item .line { display: flex; gap: 8px; align-items: center; }
+  .kind { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .kind.search { color: var(--search); } .kind.extract { color: var(--extract); }
+  .kind.crawl { color: var(--crawl); } .kind.map { color: var(--map); }
+  .item .target { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+  .item .meta { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .item .err { color: var(--bad); font-size: 12px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  @media (max-width: 960px) {
+    .app { height: auto; grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "metrics" "play" "recent"; }
+    .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .metric { border-left: 0; border-top: 1px solid var(--line); }
+    .metric:nth-child(-n+2) { border-top: 0; }
+    .metric:nth-child(even) { border-left: 1px solid var(--line); }
+    .metric:last-child { grid-column: 1 / -1; border-left: 0; }
+    .output { max-height: 70vh; }
+    .feed { max-height: 50vh; }
+    .opt input[type=text] { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <span id="status" class="dot" title="server status"></span>
+    <h1>agentsearcher</h1>
+    <span class="muted num" id="info"></span>
+    <span class="spacer"></span>
+    <form class="key" id="key-form">
+      <input id="key" type="password" placeholder="API key" autocomplete="off">
+      <button class="run" type="submit">Save</button>
+    </form>
+    <a href="/docs">API docs</a>
+  </header>
+
+  <section class="metrics card">
+    <div class="metric">
+      <div class="label">Requests</div>
+      <div class="value" id="requests">–</div>
+      <div class="sub" id="requests-sub">&nbsp;</div>
+    </div>
+    <div class="metric">
+      <div class="label">Pages loaded</div>
+      <div class="value" id="pages">–</div>
+      <div class="sub" id="pages-sub">&nbsp;</div>
+    </div>
+    <div class="metric">
+      <div class="label">Server CPU</div>
+      <div class="row"><div class="value" id="cpu">–</div><svg id="cpu-spark" viewBox="0 0 60 24" preserveAspectRatio="none"><polyline/></svg></div>
+      <div class="sub" id="cpu-sub">&nbsp;</div>
+    </div>
+    <div class="metric">
+      <div class="label" title="the server process plus Chromium and its helpers">Server memory</div>
+      <div class="row"><div class="value" id="mem">–</div><svg id="mem-spark" viewBox="0 0 60 24" preserveAspectRatio="none"><polyline/></svg></div>
+      <div class="sub" id="mem-sub">&nbsp;</div>
+    </div>
+    <div class="metric">
+      <div class="label">Loaded now</div>
+      <div class="state"><span id="browser">browser</span><span id="model">model</span></div>
+      <div class="sub" id="cache">&nbsp;</div>
+    </div>
+  </section>
+
+  <section class="play card">
+    <nav class="tabs" id="tabs"></nav>
+    <form class="controls" id="form" autocomplete="off"></form>
+    <div class="status" id="result-status"></div>
+    <div class="output" id="output"></div>
+  </section>
+
+  <aside class="recent card">
+    <h2>Recent requests <span class="muted" id="recent-count"></span></h2>
+    <div class="feed" id="feed"></div>
+  </aside>
+</div>
+
+<script>
+// main: the big input next to Run. options: compact controls under it.
+const KINDS = {
+  search: {
+    main: {name: "query", placeholder: "Search the web…"},
+    options: [
+      {name: "search_depth", label: "Mode", type: "seg", choices: ["ultra-fast", "fast", "basic", "advanced"], value: "basic"},
+      {name: "max_results", label: "Results", type: "number", value: 5, min: 1, max: 20},
+      {name: "topic", label: "Topic", type: "seg", choices: ["general", "news"], value: "general"},
+      {name: "include_answer", label: "Short answer", type: "toggle"},
+      {name: "include_raw_content", label: "Full page text", type: "toggle"},
+    ],
+  },
+  extract: {
+    main: {name: "urls", placeholder: "URLs to read, separated by spaces"},
+    options: [
+      {name: "query", label: "Only passages about", type: "text", placeholder: "optional"},
+      {name: "extract_depth", label: "Mode", type: "seg", choices: ["basic", "advanced"], value: "basic"},
+      {name: "format", label: "Format", type: "seg", choices: ["markdown", "text"], value: "markdown"},
+    ],
+  },
+  crawl: {
+    main: {name: "url", placeholder: "Site to crawl, e.g. https://docs.python.org/3/"},
+    options: [
+      {name: "instructions", label: "Look for", type: "text", placeholder: "optional"},
+      {name: "max_depth", label: "Depth", type: "number", value: 1, min: 1, max: 5},
+      {name: "limit", label: "Pages", type: "number", value: 10, min: 1},
+      {name: "extract_depth", label: "Mode", type: "seg", choices: ["basic", "advanced"], value: "basic"},
+      {name: "allow_external", label: "Other domains", type: "toggle"},
+    ],
+  },
+  map: {
+    main: {name: "url", placeholder: "Site to map, e.g. https://docs.python.org/3/"},
+    options: [
+      {name: "instructions", label: "Look for", type: "text", placeholder: "optional"},
+      {name: "max_depth", label: "Depth", type: "number", value: 1, min: 1, max: 5},
+      {name: "limit", label: "URLs", type: "number", value: 50, min: 1},
+      {name: "allow_external", label: "Other domains", type: "toggle"},
+    ],
+  },
+};
+const $ = (id) => document.getElementById(id);
+const samples = {cpu: [], mem: []};
+let kind = "search";
+
+function el(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  for (const child of children) if (child != null && child !== false) node.append(child);
+  return node;
+}
+
+function storedKey() {
+  try { return localStorage.getItem("agentsearcher-key") || ""; } catch { return ""; }
+}
+
+async function api(path, body) {
+  const headers = {"Content-Type": "application/json"};
+  const key = storedKey();
+  if (key) headers.Authorization = `Bearer ${key}`;
+  const response = await fetch(path, body ? {method: "POST", headers, body: JSON.stringify(body)} : {headers});
+  if (response.status === 401) $("key-form").classList.add("show");
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data?.detail?.error || `HTTP ${response.status}`);
+  return data;
+}
+
+$("key-form").onsubmit = (event) => {
+  event.preventDefault();
+  try { localStorage.setItem("agentsearcher-key", $("key").value.trim()); } catch {}
+  $("key-form").classList.remove("show");
+  refresh();
+};
+
+/* ---------- metrics and feed ---------- */
+
+function duration(seconds) {
+  const d = Math.floor(seconds / 86400), h = Math.floor(seconds / 3600) % 24, m = Math.floor(seconds / 60) % 60;
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m` : `${seconds}s`;
+}
+
+function ago(time) {
+  const s = Math.max(0, Math.round(Date.now() / 1000 - time));
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : new Date(time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+}
+
+// CPU is drawn on a fixed 0-100% scale; memory between its own min and max, so changes show
+function spark(id, values, fixedMax) {
+  const low = fixedMax ? 0 : Math.min(...values);
+  const range = (fixedMax ?? Math.max(...values)) - low;
+  const step = 60 / Math.max(values.length - 1, 1);
+  const y = (v) => (range ? 23 - 22 * (v - low) / range : 12).toFixed(1);
+  const points = values.map((v, i) => `${(i * step).toFixed(1)},${y(v)}`).join(" ");
+  $(id).querySelector("polyline").setAttribute("points", points);
+}
+
+function withFailed(count, failed) {
+  return el("span", {}, String(count), failed ? el("span", {className: "bad-text"}, ` · ${failed} failed`) : null);
+}
+
+function render(s) {
+  $("info").textContent = `v${s.version} · up ${duration(s.uptime)}`;
+  const kinds = Object.entries(s.requests).filter(([, r]) => r.ok + r.failed);
+  const ok = kinds.reduce((n, [, r]) => n + r.ok, 0), failed = kinds.reduce((n, [, r]) => n + r.failed, 0);
+  $("requests").replaceChildren(withFailed(ok + failed, failed));
+  $("requests-sub").textContent = kinds.map(([k, r]) => `${k} ${r.ok + r.failed}`).join(" · ") || "none yet";
+  const p = s.pages;
+  $("pages").replaceChildren(withFailed((p.loaded || 0) + (p.cached || 0), p.failed || 0));
+  $("pages-sub").textContent = `${p.cached || 0} from cache · ${p.rendered || 0} via browser`;
+
+  const sys = s.system;
+  samples.cpu = [...samples.cpu, sys.cpu_percent].slice(-60);
+  samples.mem = [...samples.mem, sys.memory_mb].slice(-60);
+  $("cpu").textContent = `${sys.cpu_percent}%`;
+  $("cpu-sub").textContent = `machine ${sys.system_cpu_percent}% · ${sys.cpus} cores`;
+  spark("cpu-spark", samples.cpu, 100);
+  $("mem").textContent = `${sys.memory_mb} MB`;
+  $("mem-sub").textContent = `machine ${(sys.system_memory_used_mb / 1024).toFixed(1)} / ${(sys.system_memory_total_mb / 1024).toFixed(1)} GB`;
+  spark("mem-spark", samples.mem);
+
+  $("browser").className = s.components.browser ? "on" : "";
+  $("model").className = s.components.model ? "on" : "";
+  $("cache").textContent = `cache: ${s.cache.pages} pages, ${s.cache.searches} searches`;
+
+  $("recent-count").textContent = s.recent.length ? `last ${s.recent.length}` : "";
+  $("feed").replaceChildren(...(s.recent.length ? s.recent.map((r) => el("button", {
+    className: "item", type: "button", title: `${r.target}\nclick to load into the form`,
+    onclick: () => loadRequest(r),
+  },
+    el("div", {className: "line"},
+      el("span", {className: `kind ${r.kind}`}, r.kind),
+      el("span", {className: "meta"}, `${r.seconds.toFixed(1)} s · ${ago(r.time)}`)),
+    el("div", {className: "target"}, r.target),
+    r.error ? el("div", {className: "err"}, r.error) : null,
+  )) : [el("div", {className: "empty"}, "Requests from the API, MCP and CLI show up here.")]));
+}
+
+async function refresh() {
+  if (document.hidden) return;
+  try {
+    render(await api("/stats"));
+    $("status").className = "dot ok";
+  } catch {
+    $("status").className = "dot bad";
+  }
+}
+
+/* ---------- playground ---------- */
+
+function control(opt) {
+  if (opt.type === "seg") {
+    const seg = el("span", {className: "seg"});
+    Object.assign(seg.dataset, {name: opt.name, value: opt.value});
+    for (const choice of opt.choices) {
+      seg.append(el("button", {
+        type: "button", textContent: choice, className: choice === opt.value ? "on" : "",
+        onclick: (e) => {
+          seg.dataset.value = choice;
+          for (const b of seg.children) b.classList.toggle("on", b === e.currentTarget);
+        },
+      }));
+    }
+    return el("span", {className: "opt"}, opt.label, seg);
+  }
+  if (opt.type === "toggle") {
+    return el("label", {className: "toggle"}, el("input", {type: "checkbox", name: opt.name}), opt.label);
+  }
+  const input = el("input", {type: opt.type, name: opt.name, placeholder: opt.placeholder || ""});
+  if (opt.value != null) input.value = opt.value;
+  if (opt.min != null) input.min = opt.min;
+  if (opt.max != null) input.max = opt.max;
+  return el("label", {className: "opt"}, opt.label, input);
+}
+
+function buildForm() {
+  $("tabs").replaceChildren(...Object.keys(KINDS).map((k) => el("button", {
+    type: "button", textContent: k, className: `tab${k === kind ? " active" : ""}`,
+    onclick: () => { if (k !== kind) { kind = k; buildForm(); clearOutput(); } },
+  })));
+  const spec = KINDS[kind];
+  const extra = el("div", {className: "extra", hidden: true},
+    el("textarea", {name: "_extra", placeholder: '{"include_domains": ["github.com"], "time_range": "week"}'}));
+  $("form").replaceChildren(
+    el("div", {className: "bar"},
+      el("input", {name: spec.main.name, placeholder: spec.main.placeholder, required: true, autofocus: true}),
+      el("button", {className: "run", type: "submit", textContent: "Run"})),
+    el("div", {className: "options"}, ...spec.options.map(control),
+      el("button", {className: "more", type: "button", textContent: "+ more parameters (JSON)",
+        onclick: (e) => { extra.hidden = !extra.hidden; e.target.textContent = `${extra.hidden ? "+" : "−"} more parameters (JSON)`; }})),
+    extra,
+  );
+  $("form").elements[spec.main.name].focus();
+}
+
+function collect(form) {
+  const spec = KINDS[kind];
+  const main = form.elements[spec.main.name].value.trim();
+  const body = {[spec.main.name]: spec.main.name === "urls" ? main.split(/\s+/).filter(Boolean) : main};
+  for (const opt of spec.options) {
+    if (opt.type === "seg") body[opt.name] = form.querySelector(`.seg[data-name="${opt.name}"]`).dataset.value;
+    else if (opt.type === "toggle") body[opt.name] = form.elements[opt.name].checked;
+    else if (opt.type === "number") body[opt.name] = Number(form.elements[opt.name].value);
+    else if (form.elements[opt.name].value.trim()) body[opt.name] = form.elements[opt.name].value.trim();
+  }
+  const extra = form.elements._extra.value.trim();
+  return extra ? {...body, ...JSON.parse(extra)} : body;
+}
+
+function loadRequest(r) {
+  kind = r.kind;
+  buildForm();
+  clearOutput();
+  const main = $("form").elements[KINDS[kind].main.name];
+  main.value = r.target;
+  main.focus();
+}
+
+function clearOutput() {
+  $("result-status").replaceChildren();
+  $("output").replaceChildren(el("div", {className: "empty"}, {
+    search: "Search the web: results come as the most relevant passages of each page.",
+    extract: "Read one or more pages: HTML, JavaScript pages and PDF.",
+    crawl: "Crawl a site from a start URL and get page contents.",
+    map: "List the URLs of a site without loading their content.",
+  }[kind]));
+}
+
+function text(content) {
+  return el("div", {className: "text", title: "click to expand", onclick: (e) => e.currentTarget.classList.add("open")}, content || "");
+}
+
+function show(data, seconds) {
+  const results = data.results || [];
+  const raw = el("pre", {hidden: true}, JSON.stringify(data, null, 2));
+  const failed = data.failed_results || [];
+  $("result-status").replaceChildren(
+    el("span", {}, `${results.length} ${kind === "map" ? "URLs" : "results"}${failed.length ? `, ${failed.length} failed` : ""}`),
+    el("span", {className: "num"}, `${seconds.toFixed(2)} s`),
+    el("span", {className: "spacer"}),
+    el("button", {className: "more", type: "button", textContent: "raw JSON",
+      onclick: () => { raw.hidden = !raw.hidden; }}),
+  );
+  const parts = [raw];
+  if (data.answer) parts.push(el("div", {className: "answer"}, el("strong", {}, "Answer: "), data.answer));
+  for (const r of results) {
+    if (kind === "map") {
+      parts.push(el("div", {className: "result"}, el("a", {href: r, target: "_blank", rel: "noopener"}, r)));
+      continue;
+    }
+    parts.push(el("div", {className: "result"},
+      el("div", {className: "head"},
+        el("a", {className: "title", href: r.url, target: "_blank", rel: "noopener"}, r.title || r.url),
+        r.score != null ? el("span", {className: "score"}, r.score.toFixed(2)) : null),
+      el("div", {className: "url"}, r.url),
+      text(r.content ?? r.raw_content),
+      r.content != null && r.raw_content ? el("details", {}, el("summary", {className: "more"}, "full page text"), el("pre", {}, r.raw_content)) : null,
+    ));
+  }
+  for (const f of failed) parts.push(el("div", {className: "error"}, `${f.url}: ${f.error}`));
+  if (!results.length && !failed.length) parts.push(el("div", {className: "empty"}, "Nothing found."));
+  $("output").replaceChildren(...parts);
+  $("output").scrollTop = 0;
+}
+
+$("form").onsubmit = async (event) => {
+  event.preventDefault();
+  const run = event.target.querySelector(".run");
+  let body;
+  try { body = collect(event.target); } catch (e) {
+    $("output").replaceChildren(el("div", {className: "error"}, `More parameters: invalid JSON (${e.message})`));
+    return;
+  }
+  run.disabled = true;
+  run.textContent = "Running…";
+  $("result-status").replaceChildren(el("span", {}, "Running…"));
+  const started = performance.now();
+  try {
+    show(await api(`/${kind}`, body), (performance.now() - started) / 1000);
+  } catch (e) {
+    $("result-status").replaceChildren();
+    $("output").replaceChildren(el("div", {className: "error"}, e.message));
+  } finally {
+    run.disabled = false;
+    run.textContent = "Run";
+    refresh();
+  }
+};
+
+buildForm();
+clearOutput();
+refresh();
+setInterval(refresh, 2000);
+document.addEventListener("visibilitychange", refresh);
+</script>
+</body>
+</html>

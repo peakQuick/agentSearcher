@@ -1,3 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
 from agentsearcher.chunk import Chunk
 from agentsearcher.rank import bm25, dedup, rank_chunks, reranker
 
@@ -53,3 +57,11 @@ def test_cross_encoder_multilingual_relevance():
     )
     assert scores[0] > scores[1]
     assert scores[2] > scores[1]
+
+
+def test_cross_encoder_concurrent_calls_match_sequential():
+    texts = ["Париж — столица Франции.", "Рецепт борща со свёклой."]
+    expected = reranker.score("столица франции", texts)
+    with ThreadPoolExecutor(4) as pool:
+        results = list(pool.map(lambda _: reranker.score("столица франции", texts), range(8)))
+    assert all(r == pytest.approx(expected) for r in results)

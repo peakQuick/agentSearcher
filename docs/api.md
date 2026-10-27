@@ -15,6 +15,7 @@ All POST endpoints accept JSON and respond in the Tavily API format. Unknown par
 - [`POST /map`](#post-map)
 - [`POST /crawl`](#post-crawl)
 - [`GET /usage`, `GET /health`](#get-usage-get-health)
+- [`GET /stats`, `GET /`](#get-stats-get-)
 - [tavily-python](#tavily-python)
 
 ## Authentication
@@ -133,6 +134,18 @@ Response: `{"base_url", "results": [{"url", "raw_content"}], "response_time", "r
 ## `GET /usage`, `GET /health`
 
 `/usage` returns a "credits" counter in the Tavily format. It has no effect on anything and lives in process memory, so it resets on restart. `/health` returns `{"status": "ok"}`.
+
+## `GET /stats`, `GET /`
+
+`/stats` is what the dashboard shows, as JSON (requires the key if `API_KEYS` is set):
+- `requests`: `ok`, `failed` and total `seconds` per kind (`search`, `extract`, `crawl`, `map`), counted for the API, MCP and CLI alike;
+- `pages`: `loaded`, `failed`, `cached` (served from the page cache), `rendered` (went through the browser);
+- `cache`, `components` (`browser` running, `model` loaded), `recent` (last 30 requests);
+- `system`: CPU and memory of the server with its child processes (Chromium, the node driver; PSS on Linux, RSS elsewhere), and of the whole machine.
+
+Everything resets on restart.
+
+`/` is the dashboard: the same numbers, refreshed every 2 s, and a playground to run search, extract, crawl and map from the browser. The page itself opens without a key; with `API_KEYS`, it asks for one and keeps it in the browser's local storage.
 
 ## tavily-python
 

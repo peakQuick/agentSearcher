@@ -6,7 +6,7 @@ import math
 import sys
 import time
 import uuid
-from collections import Counter
+from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from datetime import date, timedelta
 from urllib.parse import urlsplit
@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import RequestException
 
-from agentsearcher import config
+from agentsearcher import config, stats
 from agentsearcher.chunk import SENTENCE_END, Chunk, chunk_markdown
 from agentsearcher.extract import Page, default_favicon, extract_pdf, to_text
 from agentsearcher.extract import extract as extract_page
@@ -38,6 +38,7 @@ TIMELIMITS = {"day": "d", "week": "w", "month": "m", "year": "y"}
 TIMELIMIT_DAYS = {"d": 1, "w": 7, "m": 31, "y": 365}
 GONE = (404, 410)
 GRACE = 1.0
+DOMAIN_BOOST = 0.15
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ async def _janitor_loop():
         await asyncio.sleep(30)
         await renderer.close_if_idle()
         await asyncio.to_thread(reranker.unload_if_idle)
+        page_cache.prune()
         await asyncio.to_thread(trim_heap)
 
 
@@ -102,6 +104,7 @@ def _usable(fetched, page: Page) -> Page:
 
 async def _render(url: str, timeout: float, recall: bool) -> Page:
     fetched = await renderer.render(url, timeout)
+    stats.pages["rendered"] += 1
     page = await asyncio.to_thread(extract_page, fetched.html, fetched.url, recall=recall)
     page.rendered = True
     return _usable(fetched, page)
@@ -153,6 +156,48 @@ async def load_page(
     return page
 
 
+class PageCache:
+    """Loaded pages for CACHE_TTL seconds, least recently used dropped above CACHE_MB.
+
+    Keyed by (url, recall). A page loaded without the browser is not reused when the
+    browser is allowed: the static version may be incomplete.
+    """
+
+    def __init__(self):
+        self._items: OrderedDict[tuple[str, bool], tuple[float, bool, Page, int]] = OrderedDict()
+        self._size = 0
+
+    def get(self, url: str, recall: bool, browser: bool) -> Page | None:
+        key = (url, recall)
+        item = self._items.get(key)
+        if item is None or item[0] < time.monotonic() or (browser and not item[1]):
+            return None
+        self._items.move_to_end(key)
+        return item[2]
+
+    def put(self, url: str, recall: bool, browser: bool, page: Page):
+        if config.CACHE_TTL <= 0:
+            return
+        self._drop((url, recall))
+        size = len(page.markdown) + sum(len(u) + len(t) for u, t in page.links)
+        self._items[(url, recall)] = (time.monotonic() + config.CACHE_TTL, browser, page, size)
+        self._size += size
+        while self._size > config.CACHE_MB * 2**20 and self._items:
+            self._drop(next(iter(self._items)))
+
+    def prune(self):
+        now = time.monotonic()
+        for key in [k for k, item in self._items.items() if item[0] < now]:
+            self._drop(key)
+
+    def _drop(self, key: tuple[str, bool]):
+        if item := self._items.pop(key, None):
+            self._size -= item[3]
+
+
+page_cache = PageCache()
+
+
 async def _markdown_or_page(url: str, snippet: str | None, markdown_first: bool, **kwargs) -> Page:
     if markdown_first and (page := await markdown_page(url)):
         return page
@@ -172,9 +217,14 @@ async def load_or_error(
     """load_page() bounded by `timeout`; returns the error text instead of raising.
 
     `markdown_first` tries the site's clean .md version (llms.txt convention) first.
+    Successful loads are reused from page_cache.
     """
+    if page := page_cache.get(url, recall, browser):
+        log.info("cached  %s", url)
+        stats.pages["cached"] += 1
+        return page
     try:
-        return await asyncio.wait_for(
+        page = await asyncio.wait_for(
             _markdown_or_page(
                 url,
                 snippet,
@@ -190,7 +240,12 @@ async def load_or_error(
         error = "timed out"
     except FetchError as e:
         error = str(e)
+    else:
+        page_cache.put(url, recall, browser, page)
+        stats.pages["loaded"] += 1
+        return page
     log.info("failed  %s (%s)", url, error)
+    stats.pages["failed"] += 1
     return error
 
 
@@ -202,6 +257,26 @@ def norm_domain(domain: str) -> str:
 def matches_domain(url: str, domains: list[str]) -> bool:
     host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
     return any(host == d or host.endswith("." + d) for d in domains)
+
+
+def load_domain_rules(path: str) -> dict[str, list[str]]:
+    """`block|lower|raise <domain>` lines from the DOMAIN_RULES file; `#` starts a comment."""
+    rules: dict[str, list[str]] = {"block": [], "lower": [], "raise": []}
+    if not path:
+        return rules
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            parts = line.split("#", 1)[0].split()
+            if not parts:
+                continue
+            if len(parts) != 2 or parts[0] not in rules:
+                log.warning("domain rules: skipped line %r", line.strip())
+                continue
+            rules[parts[0]].append(norm_domain(parts[1]))
+    return rules
+
+
+domain_rules = load_domain_rules(config.DOMAIN_RULES)
 
 
 def _timelimit(req: SearchRequest) -> str | None:
@@ -320,6 +395,7 @@ def _fit(results: list[dict], limit: int):
         r["content"] = cut
 
 
+@stats.tracked("search", lambda req: req.query)
 async def search(req: SearchRequest) -> dict:
     started = time.monotonic()
     ensure_janitor()
@@ -353,7 +429,8 @@ async def search(req: SearchRequest) -> dict:
     hits = [
         h
         for h in hits
-        if not matches_domain(h.url, exclude) and (not restrict or matches_domain(h.url, include))
+        if not matches_domain(h.url, exclude + domain_rules["block"])
+        and (not restrict or matches_domain(h.url, include))
     ]
     if req.max_per_domain:
         per_domain: Counter[str] = Counter()
@@ -393,7 +470,12 @@ async def search(req: SearchRequest) -> dict:
             continue
         score = 0.8 * top[0][1] + 0.2 * (1 - i / len(hits))
         if include and not restrict and matches_domain(hit.url, include):
-            score = min(score + 0.15, 1.0)
+            score += DOMAIN_BOOST
+        if matches_domain(hit.url, domain_rules["raise"]):
+            score += DOMAIN_BOOST
+        if matches_domain(hit.url, domain_rules["lower"]):
+            score -= DOMAIN_BOOST
+        score = min(max(score, 0.0), 1.0)
         raw = None
         if req.include_raw_content and page:
             text = to_text(page.markdown) if req.include_raw_content == "text" else page.markdown
@@ -440,6 +522,7 @@ async def search(req: SearchRequest) -> dict:
     return response
 
 
+@stats.tracked("extract", lambda req: " ".join(req.urls))
 async def extract(req: ExtractRequest) -> dict:
     started = time.monotonic()
     ensure_janitor()

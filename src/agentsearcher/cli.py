@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import logging
+import subprocess
 import sys
 
 from agentsearcher import config
@@ -38,14 +39,21 @@ async def _run_once(coro):
 def _cmd_serve(args):
     import uvicorn
 
-    uvicorn.run("agentsearcher.api:app", host=args.host, port=args.port, log_level="info")
+    from agentsearcher.api import with_mcp
+
+    uvicorn.run(with_mcp(args.host), host=args.host, port=args.port, log_level="info")
 
 
 def _cmd_mcp(args):
     from agentsearcher.mcp_server import server
 
     if args.http:
-        server.run("streamable-http", host=args.host, port=args.port)
+        import uvicorn
+
+        from agentsearcher.api import cors
+
+        app = cors(server.streamable_http_app(host=args.host))
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     else:
         server.run("stdio")
 
@@ -145,13 +153,19 @@ def _cmd_fetch_model(_args):
     print(f"reranker check score: {reranker.score('test', ['test passage'])[0]:.3f}")
 
 
+def _cmd_setup(args):
+    install = [sys.executable, "-m", "patchright", "install", "chromium"]
+    subprocess.run(install + (["--with-deps"] if args.with_deps else []), check=True)
+    _cmd_fetch_model(args)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="agentsearcher", description="Local Tavily-compatible search API"
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    serve = sub.add_parser("serve", help="run the Tavily-compatible HTTP API")
+    serve = sub.add_parser("serve", help="run the Tavily-compatible HTTP API and MCP at /mcp")
     serve.add_argument("--host", default=config.HOST)
     serve.add_argument("--port", type=int, default=config.PORT)
     serve.set_defaults(func=_cmd_serve)
@@ -207,6 +221,12 @@ def main():
 
     fetch_model = sub.add_parser("fetch-model", help="download and smoke-test the reranker")
     fetch_model.set_defaults(func=_cmd_fetch_model)
+
+    setup = sub.add_parser("setup", help="download Chromium and the reranker (one time)")
+    setup.add_argument(
+        "--with-deps", action="store_true", help="also install Chromium's system libraries (root)"
+    )
+    setup.set_defaults(func=_cmd_setup)
 
     args = parser.parse_args()
     # stdio MCP owns stdout, so logs must never go there
